@@ -1,8 +1,8 @@
 import bayesnewton
 import numpy as np
 from bayesnewton.utils import solve
-from jax.config import config
-config.update("jax_enable_x64", True)
+import jax
+jax.config.update("jax_enable_x64", True)
 import pytest
 
 

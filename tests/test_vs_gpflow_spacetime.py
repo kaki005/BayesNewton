@@ -3,8 +3,8 @@ import objax
 import numpy as np
 from bayesnewton.utils import inv
 import gpflow
-from jax.config import config
-config.update("jax_enable_x64", True)
+import jax
+jax.config.update("jax_enable_x64", True)
 import pytest
 import scipy as sp
 

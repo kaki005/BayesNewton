@@ -4,8 +4,8 @@ import numpy as np
 from jax import vmap
 # from bayesnewton.utils import compute_measurement
 import matplotlib.pyplot as plt
-from jax.config import config
-config.update("jax_enable_x64", True)
+import jax
+jax.config.update("jax_enable_x64", True)
 import pytest
 
 

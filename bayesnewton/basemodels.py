@@ -2,6 +2,7 @@ import objax
 import jax.numpy as np
 from .likelihoods import Gaussian, MultiLatentLikelihood
 from .kernels import Independent, Separable
+import jax
 from jax import vmap
 from jax.lax import scan
 from jax.scipy.linalg import cholesky, cho_factor, cho_solve
@@ -43,8 +44,7 @@ from .ops import (
     blockdiagmatrix_to_blocktensor
 )
 import math
-from jax.config import config
-config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 
 LOG2PI = math.log(2 * math.pi)
 
