@@ -351,7 +351,8 @@ def _parallel_rts(fms, fPs, As, Qs, H, return_full):
     if return_full:
         return sms, sPs, gains
     else:
-        return H @ sms, H @ sPs @ H.T, gains
+        # return H @ sms, H @ sPs @ H.T, gains
+        return vmap(lambda m:H@m)(sms), vmap(lambda p:H@p@H.T)(sPs), gains
 
 
 def rauch_tung_striebel_smoother(dt, kernel, filter_mean, filter_cov, return_full=False, parallel=False):
