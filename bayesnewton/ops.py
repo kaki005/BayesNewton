@@ -5,7 +5,7 @@ from jax.scipy.linalg import solve as jsc_solve
 from .utils import mvn_logpdf, solve, transpose, inv, inv_vmap
 from jax.lax import scan, associative_scan
 import math
-
+import jax
 INV2PI = (2 * math.pi) ** -1
 
 
@@ -286,23 +286,19 @@ def kalman_filter(dt, kernel, y, noise_cov, mask=None, parallel=False, return_pr
 
 
 def _sequential_rts(fms, fPs, As, Qs, H, return_full):
-
     def body(carry, inputs):
-        fm, fP, A, Q = inputs
-        sm, sP = carry
-
-        pm = A @ fm
+        fm, fP, A, Q = inputs # filtered m_{t},P_{t}
+        sm, sP = carry  # m_{t+1}, P_{t+1}
+        pm = A @ fm # m_{t+1} predicted from m_{t}
         AfP = A @ fP
-        pP = AfP @ A.T + Q
-
+        pP = AfP @ A.T + Q # P_{t+1} predicted from P_{t}
         C = solve(pP, AfP).T
-
-        sm = fm + C @ (sm - pm)
-        sP = fP + C @ (sP - pP) @ C.T
+        new_sm = fm + C @ (sm - pm)# smoothed m_{t}
+        new_sP = fP + C @ (sP - pP) @ C.T# smoothed P_{t}
         if return_full:
-            return (sm, sP), (sm, sP, C)
+            return (new_sm, new_sP), (new_sm, new_sP, C)
         else:
-            return (sm, sP), (H @ sm, H @ sP @ H.T, C)
+            return (new_sm, new_sP), (H @ new_sm, H @ new_sP @ H.T, C)
 
     _, (sms, sPs, gains) = scan(f=body,
                                 init=(fms[-1], fPs[-1]),
@@ -369,7 +365,6 @@ def rauch_tung_striebel_smoother(dt, kernel, filter_mean, filter_cov, return_ful
         smoothed_var: the posterior marginal variances [N, obs_dim]
     """
     Pinf = kernel.stationary_covariance()
-
     As = vmap(kernel.state_transition)(dt)
     Qs = vmap(process_noise_covariance, [0, None])(As, Pinf)
     H = kernel.measurement_model()
