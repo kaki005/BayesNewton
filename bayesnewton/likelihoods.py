@@ -1,36 +1,26 @@
-import objax
-import jax.numpy as np
-from jax import grad, jacrev, vmap
-from jax.scipy.special import erf, gammaln, logsumexp
-from jax.scipy.linalg import cholesky, cho_solve, inv
-from jax.nn import softmax
-from .cubature import (
-    gauss_hermite,
-    variational_expectation_cubature,
-    moment_match_cubature,
-    statistical_linear_regression_cubature,
-    log_density_cubature,
-    log_density_power_cubature,
-    predict_cubature,
-    expected_conditional_mean_cubature
-)
-from .utils import (
-    # solve,
-    # transpose,
-    softplus,
-    softplus_inv,
-    sigmoid,
-    sigmoid_diff,
-    pep_constant,
-    mvn_logpdf,
-    mvn_logpdf_and_derivs,
-    mvst_logpdf,
-    gaussian_expected_log_lik
-)
-import math
 import abc
+import math
+
+import jax.numpy as np
+import objax
+from jax import grad, jacrev, vmap
+from jax.nn import softmax
+from jax.scipy.linalg import cho_solve, cholesky, inv
+from jax.scipy.special import erf, gammaln, logsumexp
+from jaxtyping import Array, Float, Int, Scalar
+
+from .cubature import (expected_conditional_mean_cubature, gauss_hermite,
+                       log_density_cubature, log_density_power_cubature,
+                       moment_match_cubature, predict_cubature,
+                       statistical_linear_regression_cubature,
+                       variational_expectation_cubature)
+from .utils import gaussian_expected_log_lik  # solve,; transpose,
+from .utils import (mvn_logpdf, mvn_logpdf_and_derivs, mvst_logpdf,
+                    pep_constant, sigmoid, sigmoid_diff, softplus,
+                    softplus_inv)
 
 LOG2PI = math.log(2 * math.pi)
+from typing import Callable
 
 
 class GaussNewtonMixin(abc.ABC):
@@ -76,8 +66,7 @@ class GaussNewtonMixin(abc.ABC):
         return log_target, jacobian, hessian_approx
 
     def statistical_linear_regression_quasi_newton(self, y, mean, cov, cubature=None):
-        """
-        """
+        """ """
         G = np.reshape(self.slr_residual(y, mean, cov, cubature), (-1, 1))
         J = self.slr_residual_jacobian(y, mean, cov, cubature)
         H = self.slr_residual_hessian(y, mean, cov, cubature)
@@ -88,8 +77,9 @@ class GaussNewtonMixin(abc.ABC):
         hessian = -np.sum(H.T * np.squeeze(G), axis=-1) + 2 * self.slr_log_normaliser_jacobian_v(mean, cov, cubature)
         return log_target, jacobian, hessian
 
-    def log_normaliser(self, f):
-        E, C = self.conditional_moments(f)
+    # region(log_normaliser)
+    def log_normaliser(self, f) -> Scalar:
+        E, C = self.conditional_moments(f)  # 条件付きモーメント
         C = C.reshape(C.shape[0], C.shape[0])
         cho = cholesky(C, lower=True)
         logdetC = 2 * np.sum(np.log(np.abs(np.diag(cho))))
@@ -102,17 +92,18 @@ class GaussNewtonMixin(abc.ABC):
     def log_normaliser_hessian(self, f):
         return np.squeeze(jacrev(self.log_normaliser_jacobian)(f), axis=(1, -1))
 
+    # endregion(log_normaliser)
+    # region(gauss_newton)
     def gauss_newton_residual(self, y, f):
         y = y.reshape(-1, 1)  # ensure masked entries return log like of 0
         E, C = self.conditional_moments(f)
         C = C.reshape(C.shape[0], C.shape[0])
-
         # build a mask
         mask = np.squeeze(np.isnan(y))
         maskv = mask.reshape(-1, 1)
         # --- apply mask ---
         y = np.where(maskv, E, y)
-        C_masked = np.where(maskv + maskv.T, 0., C)  # ensure masked entries are independent
+        C_masked = np.where(maskv + maskv.T, 0.0, C)  # ensure masked entries are independent
         C = np.where(np.diag(mask.reshape(-1)), 1, C_masked)  # ensure cholesky passes
 
         cholC = cholesky(C, lower=True)
@@ -127,9 +118,11 @@ class GaussNewtonMixin(abc.ABC):
         # return np.squeeze(jacrev(self.gauss_newton_residual_jacobian, argnums=1)(y, f), axis=(0, -1))
         # return np.squeeze(jacrev(self.gauss_newton_residual_jacobian, argnums=1)(y, f), axis=(1, -1))
         return np.squeeze(jacrev(self.gauss_newton_residual_jacobian, argnums=1)(y, f), axis=-1)
-
+    # endregion(gauss_newton)
+    # region(slr_residual)
     def slr_residual(self, y, mean, cov, cubature=None):
-        mu, omega = self.expected_conditional_mean(mean, cov, cubature)
+        """statistical_linear_regression."""
+        mu, omega = self.expected_conditional_mean(mean, cov, cubature)  # 条件付き平均の期待値
         chol_omega = cholesky(omega, lower=True)
         y = np.where(np.isnan(y), mu, y)  # missing data is handled here
         G = inv(chol_omega) @ (y - mu)
@@ -141,7 +134,10 @@ class GaussNewtonMixin(abc.ABC):
     def slr_residual_hessian(self, y, mean, cov, cubature=None):
         return np.squeeze(jacrev(self.slr_residual_jacobian, argnums=1)(y, mean, cov, cubature), axis=-1)
 
+    # endregion(slr_residual)
+    # region(slr_log_normaliser)
     def slr_log_normaliser(self, mean, cov, cubature=None):
+        """statistical_linear_regression"""
         mu, omega = self.expected_conditional_mean(mean, cov, cubature)
         cho = cholesky(omega, lower=True)
         logdetomega = 2 * np.sum(np.log(np.abs(np.diag(cho))))
@@ -157,9 +153,10 @@ class GaussNewtonMixin(abc.ABC):
     def slr_log_normaliser_jacobian_v(self, mean, cov, cubature=None):
         return jacrev(self.slr_log_normaliser, argnums=1)(mean, cov, cubature)
 
+    # endregion(slr_log_normaliser)
+
 
 class PartialGaussNewtonMixin(GaussNewtonMixin):
-
     def gauss_newton(self, y, f):
         """
         The Gauss-Newton method with the normalisation constant included.
@@ -194,6 +191,7 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
     Continuous models of the form p(y|f)=N(y|h(f),g(f)) should instead use _partial_gauss_newton()
     Continuous models of the form p(y|f)=N(y|h(f),sigma^2) should use _gauss_newton()
     """
+
     conditional_moments: classmethod
     expected_conditional_mean: classmethod
 
@@ -213,7 +211,7 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
         maskv = mask.reshape(-1, 1)
         # build a mask
         y = np.where(maskv, E, y)
-        C_masked = np.where(maskv + maskv.T, 0., C)  # ensure masked entries are independent
+        C_masked = np.where(maskv + maskv.T, 0.0, C)  # ensure masked entries are independent
         C = np.where(np.diag(mask.reshape(-1)), 1, C_masked)  # ensure cholesky passes
 
         cholC = cholesky(C, lower=True)
@@ -258,8 +256,7 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
         return log_target, jacobian, hessian_approx
 
     def statistical_linear_regression_quasi_newton(self, y, mean, cov, cubature=None):
-        """
-        """
+        """ """
         mu, omega = self.expected_conditional_mean(mean, cov, cubature)
         chol_omega = cholesky(omega, lower=True)
         y = np.where(np.isnan(y), mu, y)  # missing data is handled here
@@ -272,11 +269,9 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
         return log_target, jacobian, hessian
 
     def generalised_gauss_newton_residual_jacobian(self, f, cholC):
-        # return inv(cholC) @ np.squeeze(jacrev(self.conditional_moments)(f)[0], axis=(0, -1))
         return inv(cholC) @ np.squeeze(jacrev(self.conditional_moments)(f)[0], axis=(1, -1))  # TODO: is this correct?
 
     def generalised_gauss_newton_residual_hessian(self, f, cholC):
-        # return np.squeeze(jacrev(self.generalised_gauss_newton_residual_jacobian, argnums=0)(f, cholC), axis=(0, -1))
         return np.squeeze(jacrev(self.generalised_gauss_newton_residual_jacobian, argnums=0)(f, cholC), axis=(1, -1))
 
     def slr_residual_generalised(self, y, mean, cov, chol_omega, cubature=None):
@@ -286,14 +281,10 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
         return G
 
     def slr_residual_generalised_jacobian(self, y, mean, cov, chol_omega, cubature=None):
-        return np.squeeze(jacrev(self.slr_residual_generalised, argnums=1)(
-            y, mean, cov, chol_omega, cubature
-        ), axis=-1)
+        return np.squeeze(jacrev(self.slr_residual_generalised, argnums=1)(y, mean, cov, chol_omega, cubature), axis=-1)
 
     def slr_residual_generalised_hessian(self, y, mean, cov, chol_omega, cubature=None):
-        return np.squeeze(jacrev(self.slr_residual_generalised_jacobian, argnums=1)(
-            y, mean, cov, chol_omega, cubature
-        ), axis=-1)
+        return np.squeeze(jacrev(self.slr_residual_generalised_jacobian, argnums=1)(y, mean, cov, chol_omega, cubature), axis=-1)
 
 
 class Likelihood(objax.Module):
@@ -321,6 +312,15 @@ class Likelihood(objax.Module):
         raise NotImplementedError
 
     def evaluate_likelihood(self, y, f):
+        """calc likelihood.
+
+        Args:
+            y (Array): observation
+            f (Array): prior
+
+        Returns:
+            float: likelihood
+        """
         return np.exp(self.evaluate_log_likelihood(y, f))
 
     def log_likelihood_gradients_(self, y, f):
@@ -346,7 +346,7 @@ class Likelihood(objax.Module):
         log_lik, J, H = vmap(self.log_likelihood_gradients_)(y, f)
         # apply mask
         mask = np.squeeze(mask)
-        log_lik = np.where(mask, 0., log_lik)
+        log_lik = np.where(mask, 0.0, log_lik)
         J = np.where(mask, np.nan, J)
         H = np.where(mask, np.nan, H)
         return log_lik, J, np.diag(H)
@@ -373,7 +373,7 @@ class Likelihood(objax.Module):
         var_exp, dE_dm, d2E_dm2 = vmap(self.variational_expectation_, (0, 0, 0, None))(y, m, v, cubature)
 
         # apply mask
-        var_exp = np.where(np.squeeze(mask), 0., np.squeeze(var_exp))
+        var_exp = np.where(np.squeeze(mask), 0.0, np.squeeze(var_exp))
         dE_dm = np.where(mask, np.nan, dE_dm)
         d2E_dm2 = np.where(mask, np.nan, d2E_dm2)
 
@@ -381,23 +381,56 @@ class Likelihood(objax.Module):
 
     def log_density(self, y, mean, cov, cubature=None):
         """
+        calc logZₙ = log ∫ p(yₙ|fₙ) N(fₙ|mₙ,vₙ) dfₙ
+        :param likelihood: the likelihood model
+        :param y: observed data (yₙ) [scalar]
+        :param mean: cavity mean (mₙ) [scalar]
+        :param cov: cavity covariance (cₙ) [scalar]
+        :param cubature: the function to compute sigma points and weights to use during cubature
+        :return:
+        lZ: the log density, logZₙ  [scalar]
         """
         return log_density_cubature(self, y, mean, cov, cubature)
 
-    def log_density_power(self, y, mean, cov, power=1., cubature=None):
+    def log_density_power(self, y, mean, cov, power=1.0, cubature=None):
         """
+        calc logZₙ = log ∫ p^a(yₙ|fₙ) N(fₙ|mₙ,vₙ) dfₙ.
+        :param likelihood: the likelihood model
+        :param y: observed data (yₙ) [scalar]
+        :param mean: cavity mean (mₙ) [scalar]
+        :param cov: cavity covariance (cₙ) [scalar]
+        :param power: EP power [scalar]
+        :param cubature: the function to compute sigma points and weights to use during cubature
+        :return:
+            lZ: the log density, logZₙ  [scalar]
         """
         return log_density_power_cubature(self, y, mean, cov, power, cubature)
 
     def moment_match_(self, y, cav_mean, cav_cov, power=1.0, cubature=None):
         """
+        TODO: N.B. THIS VERSION ALLOWS MULTI-DIMENSIONAL MOMENT MATCHING, BUT CAN BE UNSTABLE
+        Perform moment matching via cubature.
         If no custom moment matching method is provided, we use cubature.
+
+        Moment matching involves computing the log partition function, logZₙ, and its derivatives w.r.t. the cavity mean
+            logZₙ = log ∫ pᵃ(yₙ|fₙ) N(fₙ|mₙ,vₙ) dfₙ
+        with EP power a.
+
+        :param likelihood: the likelihood model
+        :param y: observed data (yₙ) [scalar]
+        :param cav_mean: cavity mean (mₙ) [scalar]
+        :param cav_cov: cavity covariance (cₙ) [scalar]
+        :param power: EP power / fraction (a) [scalar]
+        :param cubature: the function to compute sigma points and weights to use during cubature
+        :return:
+            lZ: the log partition function, logZₙ  [scalar]
+            dlZ: first derivative of logZₙ w.r.t. mₙ (if derivatives=True)  [scalar]
+            d2lZ: second derivative of logZₙ w.r.t. mₙ (if derivatives=True)  [scalar]
         """
         return moment_match_cubature(self, y, cav_mean, cav_cov, power, cubature)
 
     def moment_match(self, y, m, v, power=1.0, cubature=None):
-        """
-        """
+        """ """
         # align shapes and compute mask
         y = y.reshape(-1, 1)
         m = m.reshape(-1, 1)
@@ -424,6 +457,10 @@ class Likelihood(objax.Module):
     def statistical_linear_regression_(self, m, v, cubature=None):
         """
         If no custom SLR method is provided, we use cubature.
+
+        Perform statistical linear regression (SLR) using cubature.
+
+        We aim to find a likelihood approximation p(yₙ|fₙ) ≈ N(yₙ|Afₙ+b,Ω).
         """
         return statistical_linear_regression_cubature(self, m, v, cubature)
 
@@ -432,11 +469,9 @@ class Likelihood(objax.Module):
         Most likelihoods factorise across data points. For multi-latent models, a custom method must be implemented.
         TODO: multi-dim case
         """
-
         # align shapes and compute mask
         m = m.reshape(-1, 1, 1)
         v = np.diag(v).reshape(-1, 1, 1)
-
         # compute SLR
         mu, omega, d_mu, d2_mu = vmap(self.statistical_linear_regression_, (0, 0, None))(m, v, cubature)
         return (
@@ -493,12 +528,7 @@ class Likelihood(objax.Module):
         TODO: multi-latent case
         """
         if mean_f.shape[0] > 1:
-            return vmap(predict_cubature, [None, 0, 0, None])(
-                self,
-                mean_f.reshape(-1, 1, 1),
-                var_f.reshape(-1, 1, 1),
-                cubature
-            )
+            return vmap(predict_cubature, [None, 0, 0, None])(self, mean_f.reshape(-1, 1, 1), var_f.reshape(-1, 1, 1), cubature)
         else:
             return predict_cubature(self, mean_f, var_f, cubature)
 
@@ -509,13 +539,11 @@ class Likelihood(objax.Module):
             x, w = cubature(mean.shape[0])
         w = w[:, None, None]
         sigma_points = cholesky(cov, lower=True) @ np.atleast_2d(x) + mean
-        log_target, jacobian, hessian_approx = vmap(
-            self.gauss_newton, in_axes=(None, 1)
-        )(y, sigma_points[..., None])
+        log_target, jacobian, hessian_approx = vmap(self.gauss_newton, in_axes=(None, 1))(y, sigma_points[..., None])
         return (
             np.sum(w * log_target),
             np.sum(w * jacobian, axis=0),
-            np.sum(w * hessian_approx, axis=0)
+            np.sum(w * hessian_approx, axis=0),
             # np.sum(w * second_order_term, axis=0)
         )
 
@@ -524,8 +552,7 @@ class Likelihood(objax.Module):
 
 
 class MultiLatentLikelihood(Likelihood):
-    """
-    """
+    """ """
 
     def log_density(self, y, mean, cov, cubature=None):
         """
@@ -549,13 +576,11 @@ class MultiLatentLikelihood(Likelihood):
         weighted_likelihood_eval = w * vmap(self.evaluate_likelihood, in_axes=(None, 1))(y, sigma_points)
         # Compute partition function via cubature:
         # Zₙ = ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ ≈ ∑ᵢ wᵢ p(yₙ|fsigᵢ)
-        Z = np.sum(
-            weighted_likelihood_eval
-        )
+        Z = np.sum(weighted_likelihood_eval)
         lZ = np.log(Z)
         return lZ
 
-    def log_density_power(self, y, mean, cov, power=1., cubature=None):
+    def log_density_power(self, y, mean, cov, power=1.0, cubature=None):
         """
         logZₙ = log ∫ p^a(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         :param y: observed data (yₙ) [scalar]
@@ -576,32 +601,25 @@ class MultiLatentLikelihood(Likelihood):
         sigma_points = cav_cho @ np.atleast_2d(x) + mean
         # pre-compute wᵢ p(yₙ|xᵢ√(2vₙ) + mₙ)
         # weighted_likelihood_eval = w * self.evaluate_likelihood(y, sigma_points) ** power
-        weighted_likelihood_eval = w * np.exp(
-            power * vmap(self.evaluate_log_likelihood, in_axes=(None, 1))(y, sigma_points)
-        )
+        weighted_likelihood_eval = w * np.exp(power * vmap(self.evaluate_log_likelihood, in_axes=(None, 1))(y, sigma_points))
         # Compute partition function via cubature:
         # Zₙ = ∫ p^a(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ ≈ ∑ᵢ wᵢ p^a(yₙ|fsigᵢ)
-        Z = np.sum(
-            weighted_likelihood_eval
-        )
+        Z = np.sum(weighted_likelihood_eval)
         lZ = np.log(Z)
         return lZ
 
     def log_density_dm(self, y, cav_mean, cav_cov, power=1.0, cubature=None):
-        """
-        """
+        """calc derivative of log_density_power"""
         dE_dm = grad(self.log_density_power, argnums=1)(y, cav_mean, cav_cov, power, cubature)
         return dE_dm
 
     def log_density_dm2(self, y, cav_mean, cav_cov, power=1.0, cubature=None):
-        """
-        """
+        """ """
         d2E_dm2 = jacrev(self.log_density_dm, argnums=1)(y, cav_mean, cav_cov, power, cubature)
         return np.squeeze(d2E_dm2)
 
     def moment_match(self, y, cav_mean, cav_cov, power=1.0, cubature=None):
-        """
-        """
+        """ """
         E = self.log_density_power(y, cav_mean, cav_cov, power, cubature)
         dE_dm = self.log_density_dm(y, cav_mean, cav_cov, power, cubature)
         d2E_dm2 = self.log_density_dm2(y, cav_mean, cav_cov, power, cubature)
@@ -633,20 +651,16 @@ class MultiLatentLikelihood(Likelihood):
         # Compute expected log likelihood via cubature:
         # E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         #                 ≈ ∑ᵢ wᵢ log p(yₙ|fsigᵢ)
-        exp_log_lik = np.sum(
-            weighted_log_likelihood_eval
-        )
+        exp_log_lik = np.sum(weighted_log_likelihood_eval)
         return exp_log_lik
 
     def expected_log_likelihood_dm(self, y, post_mean, post_cov, cubature=None):
-        """
-        """
+        """ """
         dE_dm = grad(self.expected_log_likelihood, argnums=1)(y, post_mean, post_cov, cubature)
         return dE_dm
 
     def expected_log_likelihood_dm2(self, y, post_mean, post_cov, cubature=None):
-        """
-        """
+        """ """
         d2E_dm2 = jacrev(self.expected_log_likelihood_dm, argnums=1)(y, post_mean, post_cov, cubature)
         return np.squeeze(d2E_dm2)
 
@@ -684,9 +698,8 @@ class Gaussian(Likelihood, GaussNewtonMixin):
         p(yₙ|fₙ) = 𝓝(yₙ|fₙ,σ²)
     TODO: implement multivariate version
     """
-    def __init__(self,
-                 variance=0.1,
-                 fix_variance=False):
+
+    def __init__(self, variance=0.1, fix_variance=False):
         """
         :param variance: The observation noise variance, σ²
         """
@@ -695,8 +708,9 @@ class Gaussian(Likelihood, GaussNewtonMixin):
         else:
             self.transformed_variance = objax.TrainVar(np.array(softplus_inv(variance)))
         super().__init__()
-        self.name = 'Gaussian'
-        self.link_fn = lambda f: f
+        self.name = "Gaussian"
+        self.link_fn: Callable = lambda f: f
+        """link function."""
 
     @property
     def variance(self):
@@ -739,9 +753,7 @@ class Gaussian(Likelihood, GaussNewtonMixin):
         # Compute expected log likelihood:
         # E[log p(yₙ|fₙ)] = ∫ log p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
         exp_log_lik = (
-            -0.5 * np.log(2 * np.pi)
-            - 0.5 * np.log(self.variance)
-            - 0.5 * ((y - post_mean) ** 2 + post_cov) / self.variance
+            -0.5 * np.log(2 * np.pi) - 0.5 * np.log(self.variance) - 0.5 * ((y - post_mean) ** 2 + post_cov) / self.variance
         )
         # Compute first derivative:
         dE_dm = (y - post_mean) / self.variance
@@ -769,12 +781,8 @@ class Gaussian(Likelihood, GaussNewtonMixin):
         # log partition function, lZ:
         # logZₙ = log ∫ 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ
         #       = log 𝓝(yₙ|mₙ,σ²+vₙ)
-        lZ, dlZ, d2lZ = mvn_logpdf_and_derivs(
-            y,
-            cav_mean,
-            lik_cov / power + cav_cov
-        )
-        constant = pep_constant(lik_cov, power)
+        lZ, dlZ, d2lZ = mvn_logpdf_and_derivs(y, cav_mean, lik_cov / power + cav_cov)
+        constant = pep_constant(lik_cov, power)  # power EP constant
         lZ += constant
         return lZ, dlZ, d2lZ
 
@@ -789,11 +797,7 @@ class Gaussian(Likelihood, GaussNewtonMixin):
             lZ: the log density, logZₙ [scalar]
         """
         # logZₙ = log ∫ 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ = log 𝓝(yₙ|mₙ,σ²+vₙ)
-        lZ = mvn_logpdf(
-            y,
-            mean,
-            self.variance * np.eye(cov.shape[0]) + cov
-        )
+        lZ = mvn_logpdf(y, mean, self.variance * np.eye(cov.shape[0]) + cov)
         return lZ
 
     def predict(self, mean_f, var_f, cubature=None):
@@ -814,21 +818,21 @@ class Bernoulli(Likelihood, GeneralisedGaussNewtonMixin):
     The logit link function:
         P = E[yₙ=1|fₙ] = 1 / (1 + exp(-fₙ))
     """
-    def __init__(self,
-                 link='probit'):
+
+    def __init__(self, link="probit"):
         super().__init__()
-        if link == 'logit':
+        if link == "logit":
             self.link_fn = lambda f: 1 / (1 + np.exp(-f))
             self.dlink_fn = lambda f: np.exp(f) / (1 + np.exp(f)) ** 2
             self.link = link
-        elif link == 'probit':
+        elif link == "probit":
             jitter = 1e-3
             self.link_fn = lambda f: 0.5 * (1.0 + erf(f / np.sqrt(2.0))) * (1 - 2 * jitter) + jitter
             self.dlink_fn = lambda f: grad(self.link_fn)(np.squeeze(f)).reshape(-1, 1)
             self.link = link
         else:
-            raise NotImplementedError('link function not implemented')
-        self.name = 'Bernoulli'
+            raise NotImplementedError("link function not implemented")
+        self.name = "Bernoulli"
 
     def evaluate_likelihood(self, y, f):
         """
@@ -854,15 +858,16 @@ class Bernoulli(Likelihood, GeneralisedGaussNewtonMixin):
             E[yₙ|fₙ] = Φ(fₙ)
             Var[yₙ|fₙ] = Φ(fₙ) (1 - Φ(fₙ))
         """
-        return self.link_fn(f), self.link_fn(f)-(self.link_fn(f)**2)
+        return self.link_fn(f), self.link_fn(f) - (self.link_fn(f) ** 2)
 
 
 class Probit(Bernoulli):
     """
     The probit likelihood = Bernoulli likelihood with probit link.
     """
+
     def __init__(self):
-        super().__init__(link='probit')
+        super().__init__(link="probit")
 
 
 Erf = Probit
@@ -875,8 +880,9 @@ class Logit(Bernoulli):
     """
     The logit likelihood = Bernoulli likelihood with logit link.
     """
+
     def __init__(self):
-        super().__init__(link='logit')
+        super().__init__(link="logit")
 
 
 Logistic = Logit
@@ -901,25 +907,24 @@ class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
     'exp':      link(fₙ) = exp(fₙ),         we have p(yₙ|fₙ) = exp(fₙyₙ-exp(fₙ))           / Zy.
     'logistic': link(fₙ) = log(1+exp(fₙ))), we have p(yₙ|fₙ) = logʸ(1+exp(fₙ)))(1+exp(fₙ)) / Zy.
     """
-    def __init__(self,
-                 binsize=1,
-                 link='exp'):
+
+    def __init__(self, binsize=1, link="exp"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
         super().__init__()
-        if link == 'exp':
+        if link == "exp":
             self.link_fn = np.exp
             self.dlink_fn = np.exp
             self.d2link_fn = np.exp
-        elif link == 'logistic':
+        elif link == "logistic":
             self.link_fn = softplus
             self.dlink_fn = sigmoid
             self.d2link_fn = sigmoid_diff
         else:
-            raise NotImplementedError('link function not implemented')
+            raise NotImplementedError("link function not implemented")
         self.binsize = np.array(binsize)
-        self.name = 'Poisson'
+        self.name = "Poisson"
 
     def evaluate_log_likelihood(self, y, f):
         """
@@ -964,12 +969,16 @@ class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
         link_fm = self.link_fn(m) * self.binsize
         dlink_fm = self.dlink_fn(m) * self.binsize
         d2link_fm = self.d2link_fn(m) * self.binsize
-        Jf = np.diag(np.squeeze(dlink_fm + 0.5 * link_fm ** -0.5 * dlink_fm * sigma.reshape(-1, 1), axis=-1))
-        Hf = np.diag(np.squeeze(d2link_fm
-                                - 0.25 * link_fm ** -1.5 * dlink_fm ** 2 * sigma.reshape(-1, 1)
-                                + 0.5 * link_fm ** -0.5 * d2link_fm * sigma.reshape(-1, 1)
-                                , axis=-1))
-        Jsigma = np.diag(np.squeeze(link_fm ** 0.5, axis=-1))
+        Jf = np.diag(np.squeeze(dlink_fm + 0.5 * link_fm**-0.5 * dlink_fm * sigma.reshape(-1, 1), axis=-1))
+        Hf = np.diag(
+            np.squeeze(
+                d2link_fm
+                - 0.25 * link_fm**-1.5 * dlink_fm**2 * sigma.reshape(-1, 1)
+                + 0.5 * link_fm**-0.5 * d2link_fm * sigma.reshape(-1, 1),
+                axis=-1,
+            )
+        )
+        Jsigma = np.diag(np.squeeze(link_fm**0.5, axis=-1))
         Hsigma = np.zeros_like(Jsigma)
         return Jf, Hf, Jsigma, Hsigma
 
@@ -992,12 +1001,7 @@ class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
         # TODO: multi-dim case
         exp_mean_cov = self.binsize * np.exp(post_mean + post_cov / 2)
         # Compute expected log likelihood:
-        exp_log_lik = (
-            y * np.log(self.binsize)
-            + y * post_mean
-            - exp_mean_cov
-            - gammaln(y + 1.0)
-        )
+        exp_log_lik = y * np.log(self.binsize) + y * post_mean - exp_mean_cov - gammaln(y + 1.0)
         # Compute first derivative:
         dE_dm = y - exp_mean_cov
         # Compute second derivative:
@@ -1009,36 +1013,31 @@ class StudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Student's t likelihood.
     """
-    def __init__(self,
-                 scale=1.0,
-                 df=3.0,
-                 fix_scale=False):
+
+    def __init__(self, scale=1.0, df=3.0, fix_scale=False):
         if fix_scale:
             self.transformed_scale = objax.StateVar(np.array(softplus_inv(scale)))
         else:
             self.transformed_scale = objax.TrainVar(np.array(softplus_inv(scale)))
         self.df = df
         super().__init__()
-        self.name = 'Students t'
+        self.name = "Students t"
 
     @property
     def scale(self):
         return softplus(self.transformed_scale.value)
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         const = (
             gammaln((self.df + 1.0) * 0.5)
             - gammaln(self.df * 0.5)
             - 0.5 * (np.log(np.square(self.scale)) + np.log(self.df) + np.log(np.pi))
         )
-        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(
-            1.0 + (1.0 / self.df) * (np.square((y - f) / self.scale))
-        ))
+        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(1.0 + (1.0 / self.df) * (np.square((y - f) / self.scale))))
 
     def conditional_moments(self, f):
-        return f, (self.scale ** 2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
+        return f, (self.scale**2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
 
 
 class Beta(Likelihood, GeneralisedGaussNewtonMixin):
@@ -1048,28 +1047,26 @@ class Beta(Likelihood, GeneralisedGaussNewtonMixin):
         α = scale * m
         β = scale * (1-m)
     """
-    def __init__(self,
-                 link='probit',
-                 scale=1.0,
-                 fix_scale=False):
+
+    def __init__(self, link="probit", scale=1.0, fix_scale=False):
         super().__init__()
-        if link == 'logit':
+        if link == "logit":
             self.link_fn = lambda f: 1 / (1 + np.exp(-f))
             self.dlink_fn = lambda f: np.exp(f) / (1 + np.exp(f)) ** 2
             self.link = link
-        elif link == 'probit':
+        elif link == "probit":
             jitter = 1e-3
             self.link_fn = lambda f: 0.5 * (1.0 + erf(f / np.sqrt(2.0))) * (1 - 2 * jitter) + jitter
             self.dlink_fn = lambda f: grad(self.link_fn)(np.squeeze(f)).reshape(-1, 1)
             self.link = link
         else:
-            raise NotImplementedError('link function not implemented')
+            raise NotImplementedError("link function not implemented")
         if fix_scale:
             self.transformed_scale = objax.StateVar(np.array(softplus_inv(scale)))
         else:
             self.transformed_scale = objax.TrainVar(np.array(softplus_inv(scale)))
         super().__init__()
-        self.name = 'Beta'
+        self.name = "Beta"
 
     @property
     def scale(self):
@@ -1079,13 +1076,9 @@ class Beta(Likelihood, GeneralisedGaussNewtonMixin):
         mean = self.link_fn(f)
         alpha = mean * self.scale
         beta = self.scale - alpha
-        y = np.clip(y, 1e-6, 1.-1e-6)
+        y = np.clip(y, 1e-6, 1.0 - 1e-6)
         return np.squeeze(
-            (alpha - 1.0) * np.log(y)
-            + (beta - 1.0) * np.log(1.0 - y)
-            + gammaln(alpha + beta)
-            - gammaln(alpha)
-            - gammaln(beta)
+            (alpha - 1.0) * np.log(y) + (beta - 1.0) * np.log(1.0 - y) + gammaln(alpha + beta) - gammaln(alpha) - gammaln(beta)
         )
 
     def conditional_moments(self, f):
@@ -1097,24 +1090,24 @@ class Gamma(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Gamma likelihood.
     """
-    def __init__(self,
-                 link='exp'):
+
+    def __init__(self, link="exp"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
         super().__init__()
-        if link == 'exp':
+        if link == "exp":
             self.link_fn = np.exp
             self.dlink_fn = np.exp
             self.d2link_fn = np.exp
-        elif link == 'logistic':
+        elif link == "logistic":
             self.link_fn = softplus
             self.dlink_fn = sigmoid
             self.d2link_fn = sigmoid_diff
         else:
-            raise NotImplementedError('link function not implemented')
+            raise NotImplementedError("link function not implemented")
         self.transformed_shape = objax.TrainVar(np.array(softplus_inv(1.0)))
-        self.name = 'Gamma'
+        self.name = "Gamma"
 
     @property
     def shape(self):
@@ -1122,67 +1115,52 @@ class Gamma(Likelihood, GeneralisedGaussNewtonMixin):
 
     def evaluate_log_likelihood(self, y, f):
         scale = self.link_fn(f)
-        return np.squeeze(
-            -self.shape * np.log(scale)
-            - gammaln(self.shape)
-            + (self.shape - 1.0) * np.log(y)
-            - y / scale
-        )
+        return np.squeeze(-self.shape * np.log(scale) - gammaln(self.shape) + (self.shape - 1.0) * np.log(y) - y / scale)
 
     def conditional_moments(self, f):
         scale = self.link_fn(f)
-        return self.shape * scale, self.shape * (scale ** 2)
+        return self.shape * scale, self.shape * (scale**2)
 
 
 def negative_binomial(m, y, alpha):
     k = 1 / alpha
-    return (
-        gammaln(k + y)
-        - gammaln(y + 1)
-        - gammaln(k)
-        + y * np.log(m / (m + k))
-        - k * np.log(1 + m * alpha)
-    )
+    return gammaln(k + y) - gammaln(y + 1) - gammaln(k) + y * np.log(m / (m + k)) - k * np.log(1 + m * alpha)
 
 
 class NegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
     """
     BinTayyash et. al. 2021: Non-Parametric Modelling of Temporal and Spatial Counts Data From RNA-SEQ Experiments
     """
-    def __init__(self,
-                 alpha=1.0,
-                 link='exp',
-                 scale=1.0):
+
+    def __init__(self, alpha=1.0, link="exp", scale=1.0):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
         super().__init__()
-        if link == 'exp':
-            self.link_fn = lambda mu: np.exp(mu)
-            self.dlink_fn = lambda mu: np.exp(mu)
-        elif link == 'logistic':
-            self.link_fn = lambda mu: softplus(mu)
-            self.dlink_fn = lambda mu: sigmoid(mu)
+        if link == "exp":
+            self.link_fn = np.exp
+            self.dlink_fn = np.exp
+        elif link == "logistic":
+            self.link_fn = softplus
+            self.dlink_fn = sigmoid
         else:
-            raise NotImplementedError('link function not implemented')
+            raise NotImplementedError("link function not implemented")
         self.transformed_alpha = objax.TrainVar(np.array(softplus_inv(alpha)))
         self.scale = np.array(scale)
-        self.name = 'Negative Binomial'
+        self.name = "Negative Binomial"
 
     @property
     def alpha(self):
         return softplus(self.transformed_alpha.value)
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         return negative_binomial(self.link_fn(f) * self.scale, y, self.alpha)
 
     def conditional_moments(self, f):
-        """
-        """
+        """ """
         conditional_expectation = self.link_fn(f) * self.scale
-        conditional_covariance = conditional_expectation + conditional_expectation ** 2 * self.alpha
+        conditional_covariance = conditional_expectation + conditional_expectation**2 * self.alpha
         return conditional_expectation, conditional_covariance
 
 
@@ -1190,25 +1168,23 @@ class ZeroInflatedNegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
     """
     BinTayyash et. al. 2021: Non-Parametric Modelling of Temporal and Spatial Counts Data From RNA-SEQ Experiments
     """
-    def __init__(self,
-                 alpha=1.0,
-                 km=1.0,
-                 link='exp'):
+
+    def __init__(self, alpha=1.0, km=1.0, link="exp"):
         """
         :param link: link function, either 'exp' or 'logistic'
         """
         super().__init__()
-        if link == 'exp':
+        if link == "exp":
             self.link_fn = lambda mu: np.exp(mu)
             self.dlink_fn = lambda mu: np.exp(mu)
-        elif link == 'logistic':
+        elif link == "logistic":
             self.link_fn = lambda mu: softplus(mu)
             self.dlink_fn = lambda mu: sigmoid(mu)
         else:
-            raise NotImplementedError('link function not implemented')
+            raise NotImplementedError("link function not implemented")
         self.transformed_alpha = objax.TrainVar(np.array(softplus_inv(alpha)))
         self.transformed_km = objax.TrainVar(np.array(km))
-        self.name = 'Negative Binomial'
+        self.name = "Negative Binomial"
 
     @property
     def alpha(self):
@@ -1219,20 +1195,18 @@ class ZeroInflatedNegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
         return softplus(self.transformed_km.value)
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         m = self.link_fn(f)
-        psi = 1. - (m / (self.km + m))
-        nb_zero = - np.log(1. + m * self.alpha) / self.alpha
-        log_p_zero = logsumexp(np.array([np.log(psi), np.log(1. - psi) + nb_zero]), axis=0)
-        log_p_nonzero = np.log(1. - psi) + negative_binomial(m, y, self.alpha)
+        psi = 1.0 - (m / (self.km + m))
+        nb_zero = -np.log(1.0 + m * self.alpha) / self.alpha
+        log_p_zero = logsumexp(np.array([np.log(psi), np.log(1.0 - psi) + nb_zero]), axis=0)
+        log_p_nonzero = np.log(1.0 - psi) + negative_binomial(m, y, self.alpha)
         return np.where(y == 0, log_p_zero, log_p_nonzero)
 
     def conditional_moments(self, f):
-        """
-        """
+        """ """
         m = self.link_fn(f)
-        psi = 1. - (m / (self.km + m))
+        psi = 1.0 - (m / (self.km + m))
         conditional_expectation = m * (1 - psi)
         conditional_covariance = conditional_expectation * (1 + m * (psi + self.alpha))
         return conditional_expectation, conditional_covariance
@@ -1243,22 +1217,23 @@ class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
     The Heteroscedastic Noise likelihood:
         p(y|f1,f2) = N(y|f1,link(f2)^2)
     """
-    def __init__(self, link='softplus'):
+
+    def __init__(self, link="softplus"):
         """
         :param link: link function, either 'exp' or 'softplus' (note that the link is modified with an offset)
         """
         super().__init__()
-        if link == 'exp':
+        if link == "exp":
             self.link_fn = np.exp
             self.dlink_fn = np.exp
             self.d2link_fn = np.exp
-        elif link == 'softplus':
+        elif link == "softplus":
             self.link_fn = softplus
             self.dlink_fn = sigmoid
             self.d2link_fn = sigmoid_diff
         else:
-            raise NotImplementedError('link function not implemented')
-        self.name = 'Heteroscedastic Noise'
+            raise NotImplementedError("link function not implemented")
+        self.name = "Heteroscedastic Noise"
 
     def evaluate_log_likelihood(self, y, f):
         """
@@ -1268,8 +1243,7 @@ class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
         return np.squeeze(-0.5 * np.log(2 * np.pi * var) - 0.5 * (y - mu) ** 2 / var)
 
     def conditional_moments(self, f, hyp=None):
-        """
-        """
+        """ """
         return f[:1], self.link_fn(f[1:2]) ** 2
 
     def log_likelihood_gradients(self, y, f):
@@ -1277,6 +1251,7 @@ class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
         # H = -ensure_positive_precision(-H)
         return log_lik, J, H
 
+    # region(old)
     # def log_density(self, y, mean, cov, cubature=None):
     #     """
     #     """
@@ -1490,6 +1465,7 @@ class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
     #     Jsigma = self.link_fn(np.array([m[1]]))
     #     Hsigma = np.zeros_like(Jsigma)
     #     return Jf, Hf, Jsigma, Hsigma
+    # endregion(old)
 
     def analytical_linearisation(self, m, sigma=None):
         """
@@ -1516,40 +1492,33 @@ class HeteroscedasticStudentsT(MultiLatentLikelihood, GeneralisedGaussNewtonMixi
     The Heteroscedastic Student's t likelihood:
         p(y|f1,f2) = St(y|f1,link(f2)^2)
     """
-    def __init__(self, df, link='softplus'):
+
+    def __init__(self, df, link="softplus"):
         """
         :param link: link function, either 'exp' or 'softplus' (note that the link is modified with an offset)
         """
         self.df = df
         super().__init__()
-        if link == 'exp':
+        if link == "exp":
             self.link_fn = np.exp
             self.dlink_fn = np.exp
             self.d2link_fn = np.exp
-        elif link == 'softplus':
+        elif link == "softplus":
             self.link_fn = softplus
             self.dlink_fn = sigmoid
             self.d2link_fn = sigmoid_diff
         else:
-            raise NotImplementedError('link function not implemented')
-        self.name = 'Heteroscedastic Students t'
+            raise NotImplementedError("link function not implemented")
+        self.name = "Heteroscedastic Students t"
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         mu, scale2 = self.conditional_moments(f)
-        const = (
-            gammaln((self.df + 1.0) * 0.5)
-            - gammaln(self.df * 0.5)
-            - 0.5 * (np.log(scale2) + np.log(self.df) + np.log(np.pi))
-        )
-        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(
-            1.0 + (1.0 / self.df) * (np.square(y - mu) / scale2)
-        ))
+        const = gammaln((self.df + 1.0) * 0.5) - gammaln(self.df * 0.5) - 0.5 * (np.log(scale2) + np.log(self.df) + np.log(np.pi))
+        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(1.0 + (1.0 / self.df) * (np.square(y - mu) / scale2)))
 
     def conditional_moments(self, f, hyp=None):
-        """
-        """
+        """ """
         return f[:1], self.link_fn(f[1:2]) ** 2
 
     def log_likelihood_gradients(self, y, f):
@@ -1562,6 +1531,7 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
     """
     The Nonnegative Matrix Factorisation likelihood
     """
+
     def __init__(self, num_subbands, num_modulators, variance=0.1, weights=None, fix_variance=False, fix_weights=False):
         """
         param hyp: observation noise
@@ -1571,12 +1541,12 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
         else:
             self.transformed_variance = objax.TrainVar(np.array(softplus_inv(variance)))
         super().__init__()
-        self.name = 'Nonnegative Matrix Factorisation'
+        self.name = "Nonnegative Matrix Factorisation"
         self.link_fn = softplus
         # self.link_fn = np.abs
         self.dlink_fn = sigmoid  # derivative of the link function
         # self.dlink_fn = grad(np.abs)  # derivative of the link function
-        self.d2link_fn = sigmoid_diff   # 2nd derivative of the link function
+        self.d2link_fn = sigmoid_diff  # 2nd derivative of the link function
         # self.d2link_fn = grad(grad(np.abs))   # 2nd derivative of the link function
         self.num_subbands = num_subbands
         self.num_modulators = num_modulators
@@ -1603,15 +1573,15 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
         return np.squeeze(-0.5 * np.log(2 * np.pi * var) - 0.5 * (y - mu) ** 2 / var)
 
     def conditional_moments(self, f):
-        """
-        """
-        subbands, modulators = f[:self.num_subbands], self.link_fn(f[self.num_subbands:])
+        """ """
+        subbands, modulators = f[: self.num_subbands], self.link_fn(f[self.num_subbands :])
         return np.sum(subbands * (self.weights @ modulators), axis=0).reshape(1, -1), np.array([[self.variance]])
 
     def log_likelihood_gradients(self, y, f):
         log_lik, J, H = self.log_likelihood_gradients_(y, f)
         return log_lik, J, H
 
+    # region(old)
     # def moment_match(self, y, cav_mean, cav_cov, power=1.0, cubature=None):
     #     """
     #     """
@@ -1785,56 +1755,56 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
     #     # return mu.reshape(-1, 1), omega, dmu_dm[None], d2mu_dm2[None]
     #     # return mu.reshape(-1, 1), omega, dmu_dm[None], np.swapaxes(d2mu_dm2, axis1=0, axis2=2)
     #     return mu.reshape(-1, 1), omega, dmu_dm[None], np.squeeze(d2mu_dm2, axis=-1)
-        # """
-        # TODO: this needs checking - not sure the weights have been applied correctly
-        # """
-        # if cubature is None:
-        #     x, w = gauss_hermite(self.num_modulators)  # Gauss-Hermite sigma points and weights
-        # else:
-        #     x, w = cubature(self.num_modulators)
-        #
-        # # subband_mean, modulator_mean = mean[:num_components], self.link_fn(mean[num_components:])
-        # subband_mean, modulator_mean = mean[:self.num_subbands], mean[self.num_subbands:]  # TODO: CHECK
-        # subband_cov = cov[:self.num_subbands, :self.num_subbands]
-        # modulator_cov = cov[self.num_subbands:, self.num_subbands:]
-        # subband_var = np.diag(subband_cov)[..., None]
-        # modulator_var = np.diag(modulator_cov)[..., None]
-        #
-        # sigma_points = cholesky(modulator_cov, lower=True) @ x + modulator_mean
-        # modulator_mean_positive = self.weights @ self.link_fn(sigma_points)
-        # lik_expectation, lik_covariance = (modulator_mean_positive.T @ subband_mean).T, self.variance
-        # # Compute muₙ via cubature:
-        # # muₙ = ∫ E[yₙ|fₙ] 𝓝(fₙ|mₙ,vₙ) dfₙ
-        # #    ≈ ∑ᵢ wᵢ E[yₙ|fsigᵢ]
-        # mu = np.sum(
-        #     w * lik_expectation, axis=-1
-        # )[:, None]
-        # # Compute variance S via cubature:
-        # # S = ∫ [(E[yₙ|fₙ]-muₙ) (E[yₙ|fₙ]-muₙ)' + Cov[yₙ|fₙ]] 𝓝(fₙ|mₙ,vₙ) dfₙ
-        # #   ≈ ∑ᵢ wᵢ [(E[yₙ|fsigᵢ]-muₙ) (E[yₙ|fsigᵢ]-muₙ)' + Cov[yₙ|fₙ]]
-        # S = np.sum(
-        #     w * ((lik_expectation - mu) * (lik_expectation - mu) + lik_covariance), axis=-1
-        # )[:, None]
-        # # Compute cross covariance C via cubature:
-        # # C = ∫ (fₙ-mₙ) (E[yₙ|fₙ]-muₙ)' 𝓝(fₙ|mₙ,vₙ) dfₙ
-        # #   ≈ ∑ᵢ wᵢ (fsigᵢ -mₙ) (E[yₙ|fsigᵢ]-muₙ)'
-        # C = np.sum(
-        #     w * np.block([[modulator_mean_positive * subband_var],
-        #                   [sigma_points - modulator_mean]]) * (lik_expectation - mu), axis=-1
-        # )[:, None]
-        # # Compute derivative of mu via cubature:
-        # d_mu = np.sum(
-        #     w * np.block([[modulator_mean_positive],
-        #                   [modulator_var ** -1 * (sigma_points - modulator_mean) * lik_expectation]]), axis=-1
-        # )[None, :]
-        # # Compute 2nd derivative of mu via cubature:
-        # d2_mu = np.sum(
-        #     w * np.block([[np.zeros_like(modulator_mean_positive)],
-        #                   [modulator_var ** -1 * (sigma_points - np.ones_like(modulator_mean)) * lik_expectation]]),
-        #     axis=-1
-        # )[None, :]
-        # omega = S - transpose(C) @ solve(cov, C)
-        # return mu, omega, d_mu, d2_mu
+    # """
+    # TODO: this needs checking - not sure the weights have been applied correctly
+    # """
+    # if cubature is None:
+    #     x, w = gauss_hermite(self.num_modulators)  # Gauss-Hermite sigma points and weights
+    # else:
+    #     x, w = cubature(self.num_modulators)
+    #
+    # # subband_mean, modulator_mean = mean[:num_components], self.link_fn(mean[num_components:])
+    # subband_mean, modulator_mean = mean[:self.num_subbands], mean[self.num_subbands:]  # TODO: CHECK
+    # subband_cov = cov[:self.num_subbands, :self.num_subbands]
+    # modulator_cov = cov[self.num_subbands:, self.num_subbands:]
+    # subband_var = np.diag(subband_cov)[..., None]
+    # modulator_var = np.diag(modulator_cov)[..., None]
+    #
+    # sigma_points = cholesky(modulator_cov, lower=True) @ x + modulator_mean
+    # modulator_mean_positive = self.weights @ self.link_fn(sigma_points)
+    # lik_expectation, lik_covariance = (modulator_mean_positive.T @ subband_mean).T, self.variance
+    # # Compute muₙ via cubature:
+    # # muₙ = ∫ E[yₙ|fₙ] 𝓝(fₙ|mₙ,vₙ) dfₙ
+    # #    ≈ ∑ᵢ wᵢ E[yₙ|fsigᵢ]
+    # mu = np.sum(
+    #     w * lik_expectation, axis=-1
+    # )[:, None]
+    # # Compute variance S via cubature:
+    # # S = ∫ [(E[yₙ|fₙ]-muₙ) (E[yₙ|fₙ]-muₙ)' + Cov[yₙ|fₙ]] 𝓝(fₙ|mₙ,vₙ) dfₙ
+    # #   ≈ ∑ᵢ wᵢ [(E[yₙ|fsigᵢ]-muₙ) (E[yₙ|fsigᵢ]-muₙ)' + Cov[yₙ|fₙ]]
+    # S = np.sum(
+    #     w * ((lik_expectation - mu) * (lik_expectation - mu) + lik_covariance), axis=-1
+    # )[:, None]
+    # # Compute cross covariance C via cubature:
+    # # C = ∫ (fₙ-mₙ) (E[yₙ|fₙ]-muₙ)' 𝓝(fₙ|mₙ,vₙ) dfₙ
+    # #   ≈ ∑ᵢ wᵢ (fsigᵢ -mₙ) (E[yₙ|fsigᵢ]-muₙ)'
+    # C = np.sum(
+    #     w * np.block([[modulator_mean_positive * subband_var],
+    #                   [sigma_points - modulator_mean]]) * (lik_expectation - mu), axis=-1
+    # )[:, None]
+    # # Compute derivative of mu via cubature:
+    # d_mu = np.sum(
+    #     w * np.block([[modulator_mean_positive],
+    #                   [modulator_var ** -1 * (sigma_points - modulator_mean) * lik_expectation]]), axis=-1
+    # )[None, :]
+    # # Compute 2nd derivative of mu via cubature:
+    # d2_mu = np.sum(
+    #     w * np.block([[np.zeros_like(modulator_mean_positive)],
+    #                   [modulator_var ** -1 * (sigma_points - np.ones_like(modulator_mean)) * lik_expectation]]),
+    #     axis=-1
+    # )[None, :]
+    # omega = S - transpose(C) @ solve(cov, C)
+    # return mu, omega, d_mu, d2_mu
 
     # def variational_expectation(self, y, post_mean, post_cov, cubature=None):
     #     """
@@ -1916,6 +1886,7 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
     #     # d2E_dm2 = -ensure_positive_precision(-d2E_dm2)
     #     # return E, dE_dm, np.diag(np.diag(d2E_dm2))  # TODO: check this is the same as above
     #     return E, dE_dm, d2E_dm2
+    # endregion(old)
 
     def analytical_linearisation(self, m, sigma=None):
         """
@@ -1943,16 +1914,19 @@ class AudioAmplitudeDemodulation(NonnegativeMatrixFactorisation):
     """
     The Audio Amplitude Demodulation likelihood
     """
+
     def __init__(self, num_components, variance=0.1, fix_variance=False, fix_weights=False):
         """
         param hyp: observation noise
         """
-        super().__init__(num_subbands=num_components,
-                         num_modulators=num_components,
-                         variance=variance,
-                         fix_variance=fix_variance,
-                         fix_weights=fix_weights)
-        self.name = 'Audio Amplitude Demodulation'
+        super().__init__(
+            num_subbands=num_components,
+            num_modulators=num_components,
+            variance=variance,
+            fix_variance=fix_variance,
+            fix_weights=fix_weights,
+        )
+        self.name = "Audio Amplitude Demodulation"
 
     @property
     def weights(self):
@@ -1960,18 +1934,20 @@ class AudioAmplitudeDemodulation(NonnegativeMatrixFactorisation):
 
 
 class Positive(Likelihood, GaussNewtonMixin):
-    """
-    """
+    """ """
+
     def __init__(self, variance=0.1):
         """
         param hyp: observation noise
         """
         self.transformed_variance = objax.TrainVar(np.array(softplus_inv(variance)))
         super().__init__()
-        self.name = 'Positive'
-        self.link_fn = softplus
-        self.dlink_fn = sigmoid  # derivative of the link function
-        self.d2link_fn = sigmoid_diff   # 2nd derivative of the link function
+        self.name = "Positive"
+        self.link_fn: Callable = softplus
+        self.dlink_fn = sigmoid
+        """derivative of the link function"""
+        self.d2link_fn = sigmoid_diff
+        """2nd derivative of the link function"""
 
     @property
     def variance(self):
@@ -1985,11 +1961,19 @@ class Positive(Likelihood, GaussNewtonMixin):
         return np.squeeze(-0.5 * np.log(2 * np.pi * var) - 0.5 * (y - mu) ** 2 / var)
 
     def conditional_moments(self, f):
-        """
-        """
+        """ """
         return self.link_fn(f), np.array([[self.variance]])
 
     def log_likelihood_gradients(self, y, f):
+        """_summary_
+
+        Args:
+            y (Array): observation
+            f (Array): prior
+
+        Returns:
+            tuple[Scalr,Array,Array]: (log_likelihood, jacobian, hessian)
+        """
         log_lik, J, H = self.log_likelihood_gradients_(y, f)
         return log_lik, J, H
 
@@ -1997,14 +1981,12 @@ class Positive(Likelihood, GaussNewtonMixin):
         return expected_conditional_mean_cubature(self, mean, cov, cubature)
 
     def expected_conditional_mean_dm(self, mean, cov, cubature=None):
-        """
-        """
+        """calc derivative of expected_conditional_mean."""
         dmu_dm, _ = grad(self.expected_conditional_mean, argnums=0, has_aux=True)(mean, cov, cubature)
         return np.squeeze(dmu_dm)
 
     def expected_conditional_mean_dm2(self, mean, cov, cubature=None):
-        """
-        """
+        """ """
         d2mu_dm2 = jacrev(self.expected_conditional_mean_dm, argnums=0)(mean, cov, cubature)
         return d2mu_dm2
 
@@ -2019,40 +2001,35 @@ class PositiveStudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Positive Student's t likelihood.
     """
-    def __init__(self,
-                 scale=1.0,
-                 df=3.0,
-                 fix_scale=False):
+
+    def __init__(self, scale=1.0, df=3.0, fix_scale=False):
         if fix_scale:
             self.transformed_scale = objax.StateVar(np.array(softplus_inv(scale)))
         else:
             self.transformed_scale = objax.TrainVar(np.array(softplus_inv(scale)))
         self.df = df
         super().__init__()
-        self.name = 'Positive Students t'
+        self.name = "Positive Students t"
         self.link_fn = softplus
         self.dlink_fn = sigmoid  # derivative of the link function
-        self.d2link_fn = sigmoid_diff   # 2nd derivative of the link function
+        self.d2link_fn = sigmoid_diff  # 2nd derivative of the link function
 
     @property
     def scale(self):
         return softplus(self.transformed_scale.value)
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         f = self.link_fn(f)
         const = (
             gammaln((self.df + 1.0) * 0.5)
             - gammaln(self.df * 0.5)
             - 0.5 * (np.log(np.square(self.scale)) + np.log(self.df) + np.log(np.pi))
         )
-        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(
-            1.0 + (1.0 / self.df) * (np.square((y - f) / self.scale))
-        ))
+        return np.squeeze(const - 0.5 * (self.df + 1.0) * np.log(1.0 + (1.0 / self.df) * (np.square((y - f) / self.scale))))
 
     def conditional_moments(self, f):
-        return self.link_fn(f), (self.scale ** 2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
+        return self.link_fn(f), (self.scale**2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
 
 
 class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
@@ -2060,9 +2037,8 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
     The multivariate Gaussian likelihood:
         p(Yₙ|Fₙ) = 𝓝(Yₙ|Fₙ,Σ)
     """
-    def __init__(self,
-                 covariance=None,
-                 fix_covariance=False):
+
+    def __init__(self, covariance=None, fix_covariance=False):
         """
         :param covariance: The observation noise covariance, Σ
         """
@@ -2073,7 +2049,7 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
             self.transformed_covariance = objax.TrainVar(np.array(cholesky_covariance))
         # self.transformed_covariance = objax.StateVar(np.array(cholesky_covariance))
         super().__init__()
-        self.name = 'Multivariate Gaussian'
+        self.name = "Multivariate Gaussian"
         self.link_fn = lambda f: f
 
     @property
@@ -2143,12 +2119,7 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
         # logZₙ = log ∫ 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ
         #       = log 𝓝(yₙ|mₙ,σ²+vₙ)
         mask = np.squeeze(np.isnan(y))
-        lZ, dlZ, d2lZ = mvn_logpdf_and_derivs(
-            y,
-            cav_mean,
-            self.covariance / power + cav_cov,
-            mask=mask
-        )
+        lZ, dlZ, d2lZ = mvn_logpdf_and_derivs(y, cav_mean, self.covariance / power + cav_cov, mask=mask)
         constant = pep_constant(self.covariance, power)
         lZ += constant
         return lZ, dlZ, d2lZ
@@ -2165,12 +2136,7 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
         """
         # logZₙ = log ∫ 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ = log 𝓝(yₙ|mₙ,σ²+vₙ)
         mask = np.squeeze(np.isnan(y))
-        lZ = mvn_logpdf(
-            y,
-            mean,
-            self.covariance + cov,
-            mask=mask
-        )
+        lZ = mvn_logpdf(y, mean, self.covariance + cov, mask=mask)
         return lZ
 
     def predict(self, mean_f, var_f, cubature=None):
@@ -2178,10 +2144,7 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
 
 
 class PositiveGaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
-
-    def __init__(self,
-                 covariance=None,
-                 fix_covariance=False):
+    def __init__(self, covariance=None, fix_covariance=False):
         """
         :param covariance: The observation noise covariance, Σ
         """
@@ -2191,7 +2154,7 @@ class PositiveGaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
         else:
             self.transformed_covariance = objax.TrainVar(np.array(cholesky_covariance))
         super().__init__()
-        self.name = 'Positive Multivariate Gaussian'
+        self.name = "Positive Multivariate Gaussian"
         self.link_fn = softplus
         self.dlink_fn = sigmoid  # derivative of the link function
         self.d2link_fn = sigmoid_diff  # 2nd derivative of the link function
@@ -2213,18 +2176,11 @@ class PositiveGaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
         return mvn_logpdf(y, self.link_fn(f), self.covariance, mask=mask)
 
     def conditional_moments(self, f):
-        return (
-            self.link_fn(f),
-            np.repeat(self.covariance[..., None], f.shape[1], axis=2)
-        )
+        return (self.link_fn(f), np.repeat(self.covariance[..., None], f.shape[1], axis=2))
 
 
 class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
-
-    def __init__(self,
-                 scale=None,
-                 df=3.0,
-                 fix_scale=False):
+    def __init__(self, scale=None, df=3.0, fix_scale=False):
         """
         :param scale: The observation noise covariance, Σ
         """
@@ -2235,7 +2191,7 @@ class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
             self.transformed_scale = objax.TrainVar(np.array(cholesky_scale))
         self.df = df
         super().__init__()
-        self.name = 'Multivariate Students t'
+        self.name = "Multivariate Students t"
         self.link_fn = lambda f: f
 
     @property
@@ -2245,8 +2201,7 @@ class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
         return cholesky_scale @ cholesky_scale.T
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         mask = np.isnan(y).reshape(-1)
         return mvst_logpdf(y, f, self.scale, self.df, mask=mask)
 
@@ -2255,11 +2210,7 @@ class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
 
 
 class PositiveStudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
-
-    def __init__(self,
-                 scale=None,
-                 df=3.0,
-                 fix_scale=False):
+    def __init__(self, scale=None, df=3.0, fix_scale=False):
         """
         :param scale: The observation noise covariance, Σ
         """
@@ -2270,7 +2221,7 @@ class PositiveStudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewto
             self.transformed_scale = objax.TrainVar(np.array(cholesky_scale))
         self.df = df
         super().__init__()
-        self.name = 'Positive Multivariate Students t'
+        self.name = "Positive Multivariate Students t"
         self.link_fn = softplus
         self.dlink_fn = sigmoid  # derivative of the link function
         self.d2link_fn = sigmoid_diff  # 2nd derivative of the link function
@@ -2282,42 +2233,36 @@ class PositiveStudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewto
         return cholesky_scale @ cholesky_scale.T
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         mask = np.isnan(y).reshape(-1)
         return mvst_logpdf(y, self.link_fn(f), self.scale, self.df, mask=mask)
 
     def conditional_moments(self, f):
         return (
             self.link_fn(f),
-            np.repeat(((self.scale @ self.scale) * (self.df / (self.df - 2.0)))[..., None], f.shape[1], axis=2)
+            np.repeat(((self.scale @ self.scale) * (self.df / (self.df - 2.0)))[..., None], f.shape[1], axis=2),
         )
 
 
 class Softmax(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
-
-    def __init__(self,
-                 num_classes):
+    def __init__(self, num_classes):
         self.num_classes = num_classes
         super().__init__()
-        self.name = 'Softmax'
+        self.name = "Softmax"
 
     def evaluate_log_likelihood(self, y, f):
-        return np.squeeze(-objax.functional.loss.cross_entropy_logits_sparse(
-            logits=np.atleast_2d(f),
-            labels=y.reshape(1))
-        )
+        return np.squeeze(-objax.functional.loss.cross_entropy_logits_sparse(logits=np.atleast_2d(f), labels=y.reshape(1)))
 
     def conditional_moments(self, f):
         p = softmax(f, axis=0)
-        return p, np.diag((p - p ** 2).reshape(-1))
+        return p, np.diag((p - p**2).reshape(-1))
 
     def _generalised_gauss_newton(self, y, f):
         """
         TODO: fix / figure out
         """
         y_hot = np.zeros([self.num_classes, 1], dtype=float)
-        y_hot = y_hot.at[y.astype(int)].add(1.)
+        y_hot = y_hot.at[y.astype(int)].add(1.0)
         E, C = self.conditional_moments(f)
         cholC = cholesky(C + 1e-8 * np.eye(C.shape[0]), lower=True)
         V = inv(cholC) @ (y_hot - E)  # cannot use a solve here since cholC is triangular
@@ -2334,14 +2279,12 @@ class Softmax(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
 
 
 class MultiStage(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
-
     def __init__(self):
         self.bernoulli = Bernoulli()
         self.poisson = Poisson()
 
     def evaluate_log_likelihood(self, y, f):
-        """
-        """
+        """ """
         f0, f1, f2 = f[..., 0:1], f[..., 1:2], f[..., 2:3]
 
         # flags
@@ -2367,13 +2310,8 @@ class LinearCoregionalisation(MultiLatentLikelihood, GaussNewtonMixin):
     """
     TODO: implement closed form updates
     """
-    def __init__(self,
-                 num_latents,
-                 num_outputs,
-                 covariance,
-                 weights=None,
-                 fix_weights=False,
-                 fix_covariance=False):
+
+    def __init__(self, num_latents, num_outputs, covariance, weights=None, fix_weights=False, fix_covariance=False):
         """
         :param covariance: The observation noise covariance, Σ
         """
@@ -2389,7 +2327,7 @@ class LinearCoregionalisation(MultiLatentLikelihood, GaussNewtonMixin):
         else:
             self.transformed_covariance = objax.TrainVar(np.array(cholesky_covariance))
         super().__init__()
-        self.name = 'Linear Coregionalisation'
+        self.name = "Linear Coregionalisation"
 
     @property
     def weights(self):
@@ -2413,21 +2351,15 @@ class LinearCoregionalisation(MultiLatentLikelihood, GaussNewtonMixin):
         return mvn_logpdf(y, f_out, self.covariance, mask=mask)
 
     def conditional_moments(self, f):
-        return (
-            self.weights @ f,
-            np.repeat(self.covariance[..., None], f.shape[1], axis=2)
-        )
+        return (self.weights @ f, np.repeat(self.covariance[..., None], f.shape[1], axis=2))
 
 
 class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
     """
     GPRN
     """
-    def __init__(self,
-                 num_latents,
-                 num_outputs,
-                 covariance,
-                 fix_covariance=True):  # TODO: allow for optimisation of cov
+
+    def __init__(self, num_latents, num_outputs, covariance, fix_covariance=True):  # TODO: allow for optimisation of cov
         """
         :param covariance: The observation noise covariance, Σ
         """
@@ -2439,7 +2371,7 @@ class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
         else:
             self.transformed_covariance = objax.TrainVar(np.array(cholesky_covariance))
         super().__init__()
-        self.name = 'Regression Network'
+        self.name = "Regression Network"
         # self.link_fn = softplus
         # the offset below is required for Gauss-Newton and quasi-Newton methods. Without it, the inital gradients are 0
         self.link_fn = lambda f: f + 0.1
@@ -2455,19 +2387,16 @@ class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
         :param f: mean, i.e. the latent function value Fₙ [D, 1]
         """
         mask = np.isnan(y).reshape(-1)
-        f_latents = f[:self.num_latents]
-        f_weights = self.link_fn(f[self.num_latents:]).reshape(self.num_outputs, self.num_latents)
+        f_latents = f[: self.num_latents]
+        f_weights = self.link_fn(f[self.num_latents :]).reshape(self.num_outputs, self.num_latents)
         f_out = f_weights @ f_latents
         return mvn_logpdf(y, f_out, self.covariance, mask=mask)
 
     def conditional_moments(self, f):
-        f_latents = f[:self.num_latents].reshape(self.num_latents, 1, -1)
-        f_weights = self.link_fn(f[self.num_latents:]).reshape(self.num_outputs, self.num_latents, -1)
+        f_latents = f[: self.num_latents].reshape(self.num_latents, 1, -1)
+        f_weights = self.link_fn(f[self.num_latents :]).reshape(self.num_outputs, self.num_latents, -1)
         f_out = np.squeeze(vmap(np.matmul, in_axes=(2, 2))(f_weights, f_latents).T)  # TODO: tidy
-        return (
-            f_out.reshape(self.num_outputs, -1),
-            np.repeat(self.covariance[..., None], f.shape[1], axis=2)
-        )
+        return (f_out.reshape(self.num_outputs, -1), np.repeat(self.covariance[..., None], f.shape[1], axis=2))
 
     def log_density(self, y, mean, cov, cubature=None):
         """
@@ -2492,13 +2421,11 @@ class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
         weighted_likelihood_eval = w * vmap(self.evaluate_likelihood, in_axes=(None, 1))(y, sigma_points)
         # Compute partition function via cubature:
         # Zₙ = ∫ p(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ ≈ ∑ᵢ wᵢ p(yₙ|fsigᵢ)
-        Z = np.sum(
-            weighted_likelihood_eval
-        )
+        Z = np.sum(weighted_likelihood_eval)
         lZ = np.log(np.maximum(Z, 1e-6))
         return lZ
 
-    def log_density_power(self, y, mean, cov, power=1., cubature=None):
+    def log_density_power(self, y, mean, cov, power=1.0, cubature=None):
         """
         TODO: remove the need for this, or apply to all likelihoods?
         logZₙ = log ∫ p^a(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ
@@ -2520,13 +2447,9 @@ class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
         sigma_points = cav_cho @ np.atleast_2d(x) + mean
         # pre-compute wᵢ p(yₙ|xᵢ√(2vₙ) + mₙ)
         # weighted_likelihood_eval = w * self.evaluate_likelihood(y, sigma_points) ** power
-        weighted_likelihood_eval = w * np.exp(
-            power * vmap(self.evaluate_log_likelihood, in_axes=(None, 1))(y, sigma_points)
-        )
+        weighted_likelihood_eval = w * np.exp(power * vmap(self.evaluate_log_likelihood, in_axes=(None, 1))(y, sigma_points))
         # Compute partition function via cubature:
         # Zₙ = ∫ p^a(yₙ|fₙ) 𝓝(fₙ|mₙ,vₙ) dfₙ ≈ ∑ᵢ wᵢ p^a(yₙ|fsigᵢ)
-        Z = np.sum(
-            weighted_likelihood_eval
-        )
+        Z = np.sum(weighted_likelihood_eval)
         lZ = np.log(np.maximum(Z, 1e-6))
         return lZ

@@ -460,7 +460,17 @@ def mvst_logpdf(x, mean, scale, df, mask=None):
     return const - 0.5 * (df + dim) * np.log(1.0 + (1.0 / df) * np.squeeze((x - mean).T @ solve(scale, (x - mean))))
 
 
-def pep_constant(var, power, mask=None):
+def pep_constant(var, power: float, mask=None):
+    """calc PowerEP constant.
+
+    Args:
+        var (_type_):
+        power (float): _description_
+        mask (Array, optional): mask. Defaults to None.
+
+    Returns:
+        Scalar: power EP constant.
+    """
     dim = var.shape[1]
     chol = cholesky(var, lower=True)
     log_diag_chol = np.log(np.abs(np.diag(chol)))

@@ -1,19 +1,13 @@
-import objax
-import jax.numpy as np
-from jax import vmap, Array
-from .utils import (
-    diag,
-    transpose,
-    inv_vmap,
-    vmap_diag,
-    solve,
-    ensure_diagonal_positive_precision,
-    mvn_logpdf_
-)
-from .likelihoods import Likelihood, MultiLatentLikelihood
-from .basemodels import GaussianDistribution, SparseGP
-import math
 import abc
+import math
+
+import jax.numpy as np
+import objax
+from jax import Array, vmap
+
+from .basemodels import GaussianDistribution, SparseGP
+from .likelihoods import Likelihood, MultiLatentLikelihood
+from .utils import diag, ensure_diagonal_positive_precision, inv_vmap, mvn_logpdf_, solve, transpose, vmap_diag
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -29,12 +23,8 @@ def newton_update(mean, jacobian, hessian):
     jacobian = np.where(np.isnan(jacobian), hessian @ mean, jacobian)
 
     # Newton update
-    pseudo_likelihood_nat1 = (
-        jacobian - hessian @ mean
-    )
-    pseudo_likelihood_nat2 = (
-        -hessian
-    )
+    pseudo_likelihood_nat1 = jacobian - hessian @ mean
+    pseudo_likelihood_nat2 = -hessian
 
     return pseudo_likelihood_nat1, pseudo_likelihood_nat2
 
@@ -62,8 +52,7 @@ class InferenceMixin(abc.ABC):
     conditional_data_to_posterior: classmethod
     likelihood: Likelihood
 
-    def inference(self, lr=1., batch_ind=None, **kwargs):
-
+    def inference(self, lr=1.0, batch_ind=None, **kwargs):
         if (batch_ind is None) or (batch_ind.shape[0] == self.num_data):
             batch_ind = None
 
@@ -71,22 +60,28 @@ class InferenceMixin(abc.ABC):
         # use the chosen inference method (VI, EP, ...) to compute the necessary terms for the parameter update
         mean, jacobian, hessian = self.update_variational_params(batch_ind, lr, **kwargs)
         # ---- Newton update ----
-        nat1_n, nat2_n = newton_update(mean, jacobian, hessian) # compute narural param
+        nat1_n, nat2_n = newton_update(mean, jacobian, hessian)  # compute narural param
         # -----------------------
         nat1, nat2 = self.group_natural_params(nat1_n, nat2_n, batch_ind)  # only required for SparseMarkov models
         diff1 = np.mean(np.abs(nat1 - self.pseudo_likelihood.nat1))
         diff2 = np.mean(np.abs(nat2 - self.pseudo_likelihood.nat2))
-
         # ---- update the model variational parameters ----
         self.pseudo_likelihood.update_nat_params(
-            nat1=(1 - lr) * self.pseudo_likelihood.nat1 + lr * nat1,
-            nat2=(1 - lr) * self.pseudo_likelihood.nat2 + lr * nat2
+            nat1=(1 - lr) * self.pseudo_likelihood.nat1 + lr * nat1, nat2=(1 - lr) * self.pseudo_likelihood.nat2 + lr * nat2
         )
         self.update_posterior()  # recompute posterior with new params
-
         return (mean, jacobian, hessian), (diff1, diff2)  # output state to be used in linesearch methods
 
-    def update_variational_params(self, batch_ind=None, lr=1., **kwargs):
+    def update_variational_params(self, batch_ind=None, lr=1.0, **kwargs):
+        """use the chosen inference method (VI, EP, ...) to compute the necessary terms for the parameter update.
+
+        Args:
+            batch_ind (_type_, optional): batch index. Defaults to None.
+            lr (float, optional): learning rate. Defaults to 1.0.
+
+        Returns:
+            _type_: (mean, jacobian, hessian)
+        """
         raise NotImplementedError
 
     def energy(self, batch_ind=None, **kwargs):
@@ -97,20 +92,17 @@ class Newton(InferenceMixin):
     """
     Newton = Laplace
     """
+
     compute_kl: classmethod
 
-    def update_variational_params(self, batch_ind=None, lr=1., ensure_psd=True, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, ensure_psd=True, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
-
         mean_f, _ = self.conditional_posterior_to_data(batch_ind)
-
         # Laplace approximates the expected density with a point estimate at the posterior mean: log p(y|f=m)
         log_lik, jacobian, hessian = vmap(self.likelihood.log_likelihood_gradients)(  # parallel
-            self.Y[batch_ind],
-            mean_f
+            self.Y[batch_ind], mean_f
         )
 
         if ensure_psd:
@@ -118,9 +110,9 @@ class Newton(InferenceMixin):
 
         jacobian, hessian = self.conditional_data_to_posterior(jacobian[..., None], hessian)
 
-        if mean_f.shape[1] == jacobian.shape[1]:
+        if mean_f.shape[1] == jacobian.shape[1]:  # すべて返すなら
             return mean_f, jacobian, hessian
-        else:
+        else:  # 一部のバッチを返すなら
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
 
@@ -138,8 +130,7 @@ class Newton(InferenceMixin):
 
         # Laplace approximates the expected density with a point estimate at the posterior mean: log p(y|f=m)
         log_lik, _, _ = vmap(self.likelihood.log_likelihood_gradients)(  # parallel
-            self.Y[batch_ind],
-            mean_f
+            self.Y[batch_ind], mean_f
         )
 
         KL = self.compute_kl()  # KL[q(f)|p(f)]
@@ -147,7 +138,6 @@ class Newton(InferenceMixin):
             scale * np.nansum(log_lik)  # nansum accounts for missing data
             - KL
         )
-
         return laplace_energy
 
 
@@ -162,10 +152,20 @@ class VariationalInference(InferenceMixin):
                          in non-conjugate models in to inference in conjugate models"
         Chang, Wilkinson, Khan & Solin 2020 "Fast variational learning in state space Gaussian process models"
     """
+
     compute_kl: classmethod
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, ensure_psd=True, **kwargs):
-        """
+    def update_variational_params(self, batch_ind=None, lr: float = 1.0, cubature=None, ensure_psd=True, **kwargs):
+        """_summary_
+
+        Args:
+            batch_ind (_type_, optional): batch index. Defaults to None.
+            lr (float, optional): learning rate. Defaults to 1..
+            cubature (_type_, optional): _description_. Defaults to None.
+            ensure_psd (bool, optional): wheter to avoid non-PSD precision. Defaults to True.
+
+        Returns:
+            _type_: (mean, jacobian, hessian)
         """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
@@ -174,10 +174,7 @@ class VariationalInference(InferenceMixin):
 
         # VI expected density is expected log-likelihood: E_q[log p(y|f)]
         ell, dell_dm, d2ell_dm2 = vmap(self.likelihood.variational_expectation, (0, 0, 0, None))(
-            self.Y[batch_ind],
-            mean_f,
-            cov_f,
-            cubature
+            self.Y[batch_ind], mean_f, cov_f, cubature
         )
         if ensure_psd:
             d2ell_dm2 = -ensure_diagonal_positive_precision(-d2ell_dm2)  # manual fix to avoid non-PSD precision
@@ -191,8 +188,7 @@ class VariationalInference(InferenceMixin):
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
 
     def energy(self, batch_ind=None, cubature=None, **kwargs):
-        """
-        """
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
             scale = 1
@@ -202,12 +198,7 @@ class VariationalInference(InferenceMixin):
         mean_f, cov_f = self.conditional_posterior_to_data(batch_ind)
 
         # VI expected density is expected log-likelihood: E_q[log p(y|f)]
-        ell, _, _ = vmap(self.likelihood.variational_expectation, (0, 0, 0, None))(
-            self.Y[batch_ind],
-            mean_f,
-            cov_f,
-            cubature
-        )
+        ell, _, _ = vmap(self.likelihood.variational_expectation, (0, 0, 0, None))(self.Y[batch_ind], mean_f, cov_f, cubature)
 
         KL = self.compute_kl()  # KL[q(f)|p(f)]
         variational_free_energy = -(  # the variational free energy, i.e., the negative ELBO
@@ -221,6 +212,7 @@ class ExpectationPropagation(InferenceMixin):
     """
     Expectation propagation (EP)
     """
+
     power: float
     cavity_distribution: classmethod
     cavity_distribution_tied: classmethod
@@ -230,9 +222,8 @@ class ExpectationPropagation(InferenceMixin):
     mask_y: Array
     mask_pseudo_y: Array
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, ensure_psd=True, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, ensure_psd=True, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -248,11 +239,7 @@ class ExpectationPropagation(InferenceMixin):
         # calculate log marginal likelihood and the new sites via moment matching:
         # EP expected density is the log expected likelihood: log E_q[p(y|f)]
         lel, dlel, d2lel = vmap(self.likelihood.moment_match, (0, 0, 0, None, None))(
-            self.Y[batch_ind],
-            cav_mean_f,
-            cav_cov_f,
-            self.power,
-            cubature
+            self.Y[batch_ind], cav_mean_f, cav_cov_f, self.power, cubature
         )
 
         cav_prec = inv_vmap(cav_cov_f)
@@ -264,7 +251,7 @@ class ExpectationPropagation(InferenceMixin):
             # apply mask
             mask = self.mask_pseudo_y[batch_ind][..., None]
             dlel = np.where(mask, np.nan, dlel)
-            d2lZ_masked = np.where(mask + transpose(mask), 0., d2lel)  # ensure masked entries are independent
+            d2lZ_masked = np.where(mask + transpose(mask), 0.0, d2lel)  # ensure masked entries are independent
             d2lel = np.where(diag(mask)[..., None], np.nan, d2lZ_masked)  # ensure masked entries return log like of 0
 
         if ensure_psd:
@@ -279,11 +266,10 @@ class ExpectationPropagation(InferenceMixin):
             return cavity_mean[ind], jacobian, hessian  # sparse Markov case
 
     def energy(self, batch_ind=None, cubature=None, **kwargs):
-        """
-        """
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
-            scale = 1.
+            scale = 1.0
         else:
             scale = self.num_data / batch_ind.shape[0]
 
@@ -298,24 +284,17 @@ class ExpectationPropagation(InferenceMixin):
 
         # EP expected density is log expected likelihood: log E_q[p(y|f)]
         lel, _, _ = vmap(self.likelihood.moment_match, (0, 0, 0, None, None))(
-            self.Y[batch_ind],
-            cav_mean_f,
-            cav_cov_f,
-            self.power,
-            cubature
+            self.Y[batch_ind], cav_mean_f, cav_cov_f, self.power, cubature
         )
 
         if self.mask_y is not None:
             # TODO: this assumes masking is implemented in MultiLatentLikelihood - generalise
             if not isinstance(self.likelihood, MultiLatentLikelihood):
                 if np.squeeze(self.mask_y[batch_ind]).ndim != np.squeeze(lel).ndim:
-                    raise NotImplementedError('masking in spatio-temporal models not implemented for EP')
-                lel = np.where(np.squeeze(self.mask_y[batch_ind]), 0., np.squeeze(lel))  # apply mask
+                    raise NotImplementedError("masking in spatio-temporal models not implemented for EP")
+                lel = np.where(np.squeeze(self.mask_y[batch_ind]), 0.0, np.squeeze(lel))  # apply mask
 
-        ep_energy = -(
-            lZ
-            + 1. / self.power * (scale * np.nansum(lel) - np.nansum(lel_pseudo))
-        )
+        ep_energy = -(lZ + 1.0 / self.power * (scale * np.nansum(lel) - np.nansum(lel_pseudo)))
 
         return ep_energy
 
@@ -325,32 +304,28 @@ class PosteriorLinearisation(InferenceMixin):
     An iterated smoothing algorithm based on statistical linear regression (SLR).
     This method linearises the likelihood model in the region described by the posterior.
     """
+
     # TODO: remove these when possible
     cavity_distribution: classmethod
     compute_full_pseudo_lik: classmethod
     mask_y: Array
     mask_pseudo_y: Array
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
         mean_f, cov_f = self.conditional_posterior_to_data(batch_ind)
 
         # PL expected density is mu=E_q[E(y|f)]
-        mu, omega, d_mu, _ = vmap(self.likelihood.statistical_linear_regression, (0, 0, None))(
-            mean_f,
-            cov_f,
-            cubature
-        )
+        mu, omega, d_mu, _ = vmap(self.likelihood.statistical_linear_regression, (0, 0, None))(mean_f, cov_f, cubature)
         residual = self.Y[batch_ind].reshape(mu.shape) - mu
 
         # deal with missing data
         mask = np.isnan(residual)
-        residual = np.where(mask, 0., residual)
-        omega = np.where(mask + transpose(mask), 0., omega)
+        residual = np.where(mask, 0.0, residual)
+        omega = np.where(mask + transpose(mask), 0.0, omega)
         omega = np.where(vmap_diag(mask[..., 0]), 1e6, omega)
 
         dmu_omega = transpose(solve(omega, d_mu))  # d_mu^T inv(omega)
@@ -380,33 +355,24 @@ class PosteriorLinearisation(InferenceMixin):
             scale = self.num_data / batch_ind.shape[0]
 
         # compute the cavity distribution
-        cavity_mean, cavity_cov = self.cavity_distribution(None, 1.)  # TODO: check batch_ind is not required
+        cavity_mean, cavity_cov = self.cavity_distribution(None, 1.0)  # TODO: check batch_ind is not required
         cav_mean_f, cav_cov_f = self.conditional_posterior_to_data(None, cavity_mean, cavity_cov)
 
         # calculate log marginal likelihood and the new sites via moment matching:
         # EP expected density is log E_q[p(y|f)]
         lZ, _, _ = vmap(self.likelihood.moment_match, (0, 0, 0, None, None))(
-            self.Y[batch_ind],
-            cav_mean_f[batch_ind],
-            cav_cov_f[batch_ind],
-            1.,
-            cubature
+            self.Y[batch_ind], cav_mean_f[batch_ind], cav_cov_f[batch_ind], 1.0, cubature
         )
 
         if self.mask_y is not None:
             # TODO: this assumes masking is implemented in MultiLatentLikelihood - generalise
             if not isinstance(self.likelihood, MultiLatentLikelihood):
                 if np.squeeze(self.mask_y[batch_ind]).ndim != np.squeeze(lZ).ndim:
-                    raise NotImplementedError('masking in spatio-temporal models not implemented for EP')
-                lZ = np.where(np.squeeze(self.mask_y[batch_ind]), 0., np.squeeze(lZ))  # apply mask
+                    raise NotImplementedError("masking in spatio-temporal models not implemented for EP")
+                lZ = np.where(np.squeeze(self.mask_y[batch_ind]), 0.0, np.squeeze(lZ))  # apply mask
 
         pseudo_y, pseudo_var = self.compute_full_pseudo_lik()
-        lZ_pseudo = mvn_logpdf_(
-            pseudo_y,
-            cavity_mean,
-            pseudo_var + cavity_cov,
-            self.mask_pseudo_y
-        )
+        lZ_pseudo = mvn_logpdf_(pseudo_y, cavity_mean, pseudo_var + cavity_cov, self.mask_pseudo_y)
 
         if isinstance(self, SparseGP):
             pseudo_y, pseudo_var = self.compute_global_pseudo_lik()
@@ -415,25 +381,21 @@ class PosteriorLinearisation(InferenceMixin):
         # else:
         lZ_post = self.compute_log_lik(pseudo_y, pseudo_var)
 
-        ep_energy = -(
-                lZ_post
-                + (scale * np.nansum(lZ) - np.nansum(lZ_pseudo))
-        )
+        ep_energy = -(lZ_post + (scale * np.nansum(lZ) - np.nansum(lZ_pseudo)))
 
         return ep_energy
 
 
 class PosteriorLinearisation2ndOrder(PosteriorLinearisation):
-    """
-    """
+    """ """
+
     # TODO: remove these when possible
     compute_full_pseudo_lik: classmethod
     mask_y: Array
     mask_pseudo_y: Array
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, ensure_psd=True, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, ensure_psd=True, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -469,9 +431,8 @@ class Taylor(Newton):
     does not effect the energy.
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         Y = self.Y[batch_ind]
@@ -487,7 +448,7 @@ class Taylor(Newton):
         residual = Y.reshape(likelihood_expectation.shape) - likelihood_expectation  # residual, yₙ-E[yₙ|fₙ]
 
         mask = np.isnan(residual)
-        residual = np.where(mask, 0., residual)
+        residual = np.where(mask, 0.0, residual)
 
         Jf_invsigma = transpose(solve(sigma, Jf))  # Jf^T inv(sigma)
         jacobian = Jf_invsigma @ residual
@@ -514,18 +475,14 @@ class GaussNewton(Newton):
     Gauss-Newton
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
         mean_f, cov_f = self.conditional_posterior_to_data(batch_ind)
 
-        log_target, jacobian, hessian = vmap(self.likelihood.gauss_newton, (0, 0))(
-            self.Y[batch_ind],
-            mean_f
-        )
+        log_target, jacobian, hessian = vmap(self.likelihood.gauss_newton, (0, 0))(self.Y[batch_ind], mean_f)
 
         jacobian, hessian = self.conditional_data_to_posterior(jacobian, hessian)
 
@@ -541,19 +498,15 @@ class VariationalGaussNewton(VariationalInference):
     Variational Gauss-Newton
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
         mean_f, cov_f = self.conditional_posterior_to_data(batch_ind)
 
         log_target, jacobian, hessian = vmap(self.likelihood.variational_gauss_newton, (0, 0, 0, None))(
-            self.Y[batch_ind],
-            mean_f,
-            cov_f,
-            cubature
+            self.Y[batch_ind], mean_f, cov_f, cubature
         )
 
         jacobian, hessian = self.conditional_data_to_posterior(jacobian, hessian)
@@ -566,16 +519,15 @@ class VariationalGaussNewton(VariationalInference):
 
 
 class PosteriorLinearisation2ndOrderGaussNewton(PosteriorLinearisation):
-    """
-    """
+    """ """
+
     # TODO: remove these when possible
     compute_full_pseudo_lik: classmethod
     mask_y: Array
     mask_pseudo_y: Array
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -598,12 +550,10 @@ class PosteriorLinearisation2ndOrderGaussNewton(PosteriorLinearisation):
 
 
 class NewtonRiemann(Newton):
-    """
-    """
+    """ """
 
-    def update_variational_params(self, batch_ind=None, lr=1., **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -611,8 +561,7 @@ class NewtonRiemann(Newton):
 
         # Laplace approximates the expected density with a point estimate at the posterior mean: log p(y|f=m)
         log_lik, jacobian, hessian = vmap(self.likelihood.log_likelihood_gradients)(  # parallel
-            self.Y[batch_ind],
-            mean_f
+            self.Y[batch_ind], mean_f
         )
 
         jacobian, hessian = self.conditional_data_to_posterior(jacobian[..., None], hessian)
@@ -642,9 +591,8 @@ class VariationalInferenceRiemann(VariationalInference):
     TODO: implement grouped update to enable sparse markov inference
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -652,10 +600,7 @@ class VariationalInferenceRiemann(VariationalInference):
 
         # VI expected density is E_q[log p(y|f)]
         expected_density, dE_dm, d2E_dm2 = vmap(self.likelihood.variational_expectation, (0, 0, 0, None))(
-            self.Y[batch_ind],
-            mean_f,
-            cov_f,
-            cubature
+            self.Y[batch_ind], mean_f, cov_f, cubature
         )
 
         jacobian, hessian = self.conditional_data_to_posterior(dE_dm, d2E_dm2)
@@ -676,7 +621,7 @@ class ExpectationPropagationRiemann(ExpectationPropagation):
     Expectation propagation (EP) with PSD constraints via Riemannian gradients
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
         """
         TODO: will not currently work with SparseGP because cavity_cov is a vector (SparseGP and SparseMarkovGP use different parameterisations)
         """
@@ -690,11 +635,7 @@ class ExpectationPropagationRiemann(ExpectationPropagation):
         # calculate log marginal likelihood and the new sites via moment matching:
         # EP expected density is log E_q[p(y|f)]
         lZ, dlZ, d2lZ = vmap(self.likelihood.moment_match, (0, 0, 0, None, None))(
-            self.Y[batch_ind],
-            cav_mean_f,
-            cav_cov_f,
-            self.power,
-            cubature
+            self.Y[batch_ind], cav_mean_f, cav_cov_f, self.power, cubature
         )
 
         cav_prec = inv_vmap(cav_cov_f)
@@ -706,7 +647,7 @@ class ExpectationPropagationRiemann(ExpectationPropagation):
             # apply mask
             mask = self.mask_pseudo_y[batch_ind][..., None]
             dlZ = np.where(mask, np.nan, dlZ)
-            d2lZ_masked = np.where(mask + transpose(mask), 0., d2lZ)  # ensure masked entries are independent
+            d2lZ_masked = np.where(mask + transpose(mask), 0.0, d2lZ)  # ensure masked entries are independent
             d2lZ = np.where(diag(mask)[..., None], np.nan, d2lZ_masked)  # ensure masked entries return nan
 
         jacobian, hessian = self.conditional_data_to_posterior(dlZ, d2lZ)
@@ -723,12 +664,10 @@ class ExpectationPropagationRiemann(ExpectationPropagation):
 
 
 class PosteriorLinearisation2ndOrderRiemann(PosteriorLinearisation2ndOrder):
-    """
-    """
+    """ """
 
-    def update_variational_params(self, batch_ind=None, lr=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
 
@@ -755,36 +694,26 @@ class PosteriorLinearisation2ndOrderRiemann(PosteriorLinearisation2ndOrder):
 
 
 def bfgs(mean, jacobian, mean_prev, jacobian_prev, B_prev):
-    """ The BFGS update is guaranteed to result in PSD updates only if sg < 0 """
+    """The BFGS update is guaranteed to result in PSD updates only if sg < 0"""
     g = jacobian - jacobian_prev
     s = mean - mean_prev
     sBs = transpose(s) @ B_prev @ s
     sg = transpose(s) @ g
-    B_new = (
-        B_prev
-        - (B_prev @ s @ transpose(s) @ B_prev) / sBs
-        + (g @ transpose(g)) / sg
-    )
+    B_new = B_prev - (B_prev @ s @ transpose(s) @ B_prev) / sBs + (g @ transpose(g)) / sg
     B_new = np.where(sg < -1e-14, B_new, B_prev)  # don't update the hessian if non-psd
     return B_new
 
 
 def damped_bfgs(mean, jacobian, mean_prev, jacobian_prev, B_prev, damping=0.8):
-    """ The damped BFGS update is guaranteed to result in PSD updates """
+    """The damped BFGS update is guaranteed to result in PSD updates"""
     g = jacobian - jacobian_prev
     s = mean - mean_prev
     sBs = transpose(s) @ B_prev @ s
     sg = transpose(s) @ g
-    theta = np.where(sg > (1 - damping) * sBs,
-                     damping * sBs / (sBs - sg),
-                     np.ones_like(sBs))
+    theta = np.where(sg > (1 - damping) * sBs, damping * sBs / (sBs - sg), np.ones_like(sBs))
     r = theta * g + (1 - theta) * B_prev @ s
     sr = transpose(s) @ r
-    B_new = (
-        B_prev
-        - (B_prev @ s @ transpose(s) @ B_prev) / sBs
-        + (r @ transpose(r)) / sr
-    )
+    B_new = B_prev - (B_prev @ s @ transpose(s) @ B_prev) / sBs + (r @ transpose(r)) / sr
     # sr guaranteed to be positive except for at initial point, or for points where theta=1, so we still check:
     B_new = np.where(sr < -1e-14, B_new, B_prev)
     return B_new  # convert back to NSD
@@ -799,17 +728,11 @@ def damped_bfgs_modified(mean, jacobian, mean_prev, jacobian_prev, B_prev, dampi
     s = mean - mean_prev
     sBs = transpose(s) @ B_prev @ s
     sg = transpose(s) @ g
-    theta = np.where(sg > (1 - damping) * sBs,
-                     damping * sBs / (sBs - sg),
-                     np.ones_like(sBs))
+    theta = np.where(sg > (1 - damping) * sBs, damping * sBs / (sBs - sg), np.ones_like(sBs))
     theta = np.where(damping > 0.99, np.ones_like(theta), theta)
     r = theta * g + (1 - theta) * B_prev @ s
     sr = transpose(s) @ r
-    B_new = (
-        B_prev
-        - (B_prev @ s @ transpose(s) @ B_prev) / sBs
-        + (r @ transpose(r)) / sr
-    )
+    B_new = B_prev - (B_prev @ s @ transpose(s) @ B_prev) / sBs + (r @ transpose(r)) / sr
     # sr guaranteed to be positive except for at initial point, or for points where theta=1, so we still check:
     B_new = np.where(sr < -1e-14, B_new, B_prev)
     return B_new  # convert back to NSD
@@ -828,8 +751,7 @@ class QuasiNewtonBase(abc.ABC):
     hessian_approx: objax.StateVar
     posterior_variance: objax.StateVar
 
-    def inference(self, lr=1., batch_ind=None, **kwargs):
-
+    def inference(self, lr=1.0, batch_ind=None, **kwargs):
         if (batch_ind is None) or (batch_ind.shape[0] == self.num_data):
             batch_ind = None
 
@@ -857,7 +779,7 @@ class QuasiNewtonBase(abc.ABC):
         self.pseudo_likelihood.update_nat_params(
             nat1=(1 - lr) * self.pseudo_likelihood.nat1 + lr * nat1,
             # nat1=nat1,
-            nat2=(1 - lr) * self.pseudo_likelihood.nat2 + lr * nat2
+            nat2=(1 - lr) * self.pseudo_likelihood.nat2 + lr * nat2,
             # nat2=nat2
         )
 
@@ -872,9 +794,8 @@ class QuasiNewton(QuasiNewtonBase, Newton):
     TODO: implement grouped update to enable sparse markov inference
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., damping=1., **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, damping=1.0, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         ind = self.ind[batch_ind]
@@ -883,17 +804,18 @@ class QuasiNewton(QuasiNewtonBase, Newton):
 
         # Laplace approximates the expected density with a point estimate at the posterior mean: log p(y|f=m)
         log_lik, jacobian, _ = vmap(self.likelihood.log_likelihood_gradients)(  # parallel
-            self.Y[batch_ind],
-            mean_f
+            self.Y[batch_ind], mean_f
         )
 
         jacobian, _ = self.conditional_data_to_posterior(jacobian[..., None], _)
 
         B = damped_bfgs_modified(
-            mean_f, jacobian,
-            self.mean_prev.value[ind], self.jacobian_prev.value[ind],
+            mean_f,
+            jacobian,
+            self.mean_prev.value[ind],
+            self.jacobian_prev.value[ind],
             self.hessian_approx.value[ind],
-            damping=damping
+            damping=damping,
         )
 
         if self.mean_prev.value.shape[0] != mean_f.shape[0]:
@@ -909,9 +831,8 @@ class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
     TODO: implement grouped update to enable sparse markov inference
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., damping=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, damping=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         ind = self.ind[batch_ind]
@@ -920,10 +841,7 @@ class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
 
         # VI expected density is E_q[log p(y|f)]
         expected_density, dE_dm, d2E_dm2 = vmap(self.likelihood.variational_expectation, (0, 0, 0, None))(
-            self.Y[batch_ind],
-            mean_f,
-            cov_f,
-            cubature
+            self.Y[batch_ind], mean_f, cov_f, cubature
         )
 
         dE_dv = 0.5 * d2E_dm2
@@ -938,10 +856,12 @@ class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
             jacobian_mean_var = np.concatenate([dE_dm, diag(dE_dv)[..., None]], axis=1)
 
         B = damped_bfgs_modified(
-            mean_var, jacobian_mean_var,
-            self.mean_prev.value[ind], self.jacobian_prev.value[ind],
+            mean_var,
+            jacobian_mean_var,
+            self.mean_prev.value[ind],
+            self.jacobian_prev.value[ind],
             self.hessian_approx.value[ind],
-            damping=damping
+            damping=damping,
         )
 
         if self.mean_prev.value.shape[0] != mean_f.shape[0]:
@@ -949,7 +869,7 @@ class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
             jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
-        return mean_f, jacobian, B[:, :self.func_dim, :self.func_dim], (mean_var, jacobian_mean_var, B)
+        return mean_f, jacobian, B[:, : self.func_dim, : self.func_dim], (mean_var, jacobian_mean_var, B)
 
 
 class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation):
@@ -957,9 +877,8 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
     TODO: implement grouped update to enable sparse markov inference
     """
 
-    def update_variational_params(self, batch_ind=None, lr=1., damping=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, damping=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         ind = self.ind[batch_ind]
@@ -971,11 +890,7 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
         # calculate log marginal likelihood and the new sites via moment matching:
         # EP expected density is log E_q[p(y|f)]
         lZ, dlZ_dm, d2lZ_dm, dlZ_dv = vmap(self.likelihood.moment_match_dv, (0, 0, 0, None, None))(
-            self.Y[batch_ind],
-            cav_mean_f,
-            cav_cov_f,
-            self.power,
-            cubature
+            self.Y[batch_ind], cav_mean_f, cav_cov_f, self.power, cubature
         )
 
         jacobian_unscaled, _ = self.conditional_data_to_posterior(dlZ_dm, d2lZ_dm)
@@ -987,23 +902,24 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
             jacobian_unscaled_mean_var = np.concatenate([dlZ_dm, diag(dlZ_dv)[..., None]], axis=1)
 
         B = damped_bfgs_modified(
-            cavity_mean_var, jacobian_unscaled_mean_var,
-            self.mean_prev.value[ind], self.jacobian_prev.value[ind],
+            cavity_mean_var,
+            jacobian_unscaled_mean_var,
+            self.mean_prev.value[ind],
+            self.jacobian_prev.value[ind],
             self.hessian_approx.value[ind],
-            damping=damping
+            damping=damping,
         )
 
         cav_prec = inv_vmap(cav_cov_f)
-        scale_factor = cav_prec @ inv_vmap(-B[:, :self.func_dim, :self.func_dim] + cav_prec) / self.power
+        scale_factor = cav_prec @ inv_vmap(-B[:, : self.func_dim, : self.func_dim] + cav_prec) / self.power
 
         jacobian = scale_factor @ jacobian_unscaled
-        hessian = scale_factor @ B[:, :self.func_dim, :self.func_dim]
+        hessian = scale_factor @ B[:, : self.func_dim, : self.func_dim]
 
         if self.mean_prev.value.shape[0] != cav_mean_f.shape[0]:
             B = self.hessian_approx.value.at[ind].set(B)
             jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             cav_mean_f = self.mean_prev.value.at[ind].set(cav_mean_f)
-
 
         return cav_mean_f, jacobian, hessian, (cavity_mean_var, jacobian_unscaled_mean_var, B)
 
@@ -1076,12 +992,10 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
 
 
 class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinearisation):
-    """
-    """
+    """ """
 
-    def update_variational_params(self, batch_ind=None, lr=1., damping=1., cubature=None, **kwargs):
-        """
-        """
+    def update_variational_params(self, batch_ind=None, lr=1.0, damping=1.0, cubature=None, **kwargs):
+        """ """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         ind = self.ind[batch_ind]
@@ -1106,10 +1020,12 @@ class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinear
             jacobian_mean_var = np.concatenate([dmu_dm, diag(dmu_dv)[..., None]], axis=1)
 
         B = damped_bfgs_modified(
-            mean_var, jacobian_mean_var,
-            self.mean_prev.value[ind], self.jacobian_prev.value[ind],
+            mean_var,
+            jacobian_mean_var,
+            self.mean_prev.value[ind],
+            self.jacobian_prev.value[ind],
             self.hessian_approx.value[ind],
-            damping=damping
+            damping=damping,
         )
 
         if self.mean_prev.value.shape[0] != mean_f.shape[0]:
@@ -1117,4 +1033,4 @@ class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinear
             jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
-        return mean_f, jacobian, B[:, :self.func_dim, :self.func_dim], (mean_var, jacobian_mean_var, B)
+        return mean_f, jacobian, B[:, : self.func_dim, : self.func_dim], (mean_var, jacobian_mean_var, B)
