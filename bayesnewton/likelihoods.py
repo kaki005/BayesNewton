@@ -107,10 +107,10 @@ class GaussNewtonMixin(abc.ABC):
         E, C = self.conditional_moments(f)
         C = C.reshape(C.shape[0], C.shape[0])
 
-        # --- apply mask ---
+        # build a mask
         mask = np.squeeze(np.isnan(y))
         maskv = mask.reshape(-1, 1)
-        # build a mask
+        # --- apply mask ---
         y = np.where(maskv, E, y)
         C_masked = np.where(maskv + maskv.T, 0., C)  # ensure masked entries are independent
         C = np.where(np.diag(mask.reshape(-1)), 1, C_masked)  # ensure cholesky passes
@@ -342,16 +342,13 @@ class Likelihood(objax.Module):
         f = f.reshape(-1, 1)
         mask = np.isnan(y)
         y = np.where(mask, f, y)
-
         # compute gradients of the log likelihood
         log_lik, J, H = vmap(self.log_likelihood_gradients_)(y, f)
-
         # apply mask
         mask = np.squeeze(mask)
         log_lik = np.where(mask, 0., log_lik)
         J = np.where(mask, np.nan, J)
         H = np.where(mask, np.nan, H)
-
         return log_lik, J, np.diag(H)
 
     def variational_expectation_(self, y, m, v, cubature=None):

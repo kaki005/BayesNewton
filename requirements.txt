@@ -1,9 +1,0 @@
-jax
-jaxlib
-objax
-numpy
-matplotlib
-scipy
-scikit-learn
-pandas
-tensorflow_probability==0.21

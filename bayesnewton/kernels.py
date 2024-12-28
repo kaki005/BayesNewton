@@ -1503,7 +1503,7 @@ class Independent(Kernel):
     This class differs from Sum only in the measurement model.
     """
     def __init__(self, kernels):
-        self.num_kernels = len(kernels)
+        self.num_kernels:int = len(kernels)
         for i in range(self.num_kernels):
             selfdotkerneli = "self.kernel" + str(i)
             exec(selfdotkerneli + " = kernels[i]")

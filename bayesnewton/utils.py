@@ -1,14 +1,20 @@
-import jax.numpy as np
-import numpy as nnp
-from jax import vmap
-from jax.scipy.linalg import cholesky, cho_factor, cho_solve
-from jax.scipy.special import gammaln
-from jax.lax import scan
 # from matplotlib._png import read_png
 import math
 
+import jax.numpy as np
+import numpy as nnp
+from jax import vmap
+from jax.scipy.linalg import cho_factor, cho_solve, cholesky
+from jax.scipy.special import gammaln
+from jaxtyping import Array, Float, Scalar
+
+from .kernels import StationaryKernel
+
 LOG2PI = math.log(2 * math.pi)
 INV2PI = (2 * math.pi) ** -1
+# ====================
+# region(matrix)
+# ====================
 
 
 def solve(P, Q):
@@ -19,7 +25,7 @@ def solve(P, Q):
     return cho_solve(L, Q)
 
 
-def inv(P):
+def inv(P: Float[Array, "D D"]) -> Float[Array, "D D"]:
     """
     Compute the inverse of a PSD matrix using the Cholesky factorisation
     """
@@ -27,7 +33,7 @@ def inv(P):
     return cho_solve(L, np.eye(P.shape[-1]))
 
 
-def inv_vmap(P):
+def inv_vmap(P: Float[Array, "D D"]) -> Float[Array, "D D D"]:
     """
     Compute the inverse of a PSD matrix using the Cholesky factorisation
     """
@@ -51,20 +57,20 @@ def transpose(P):
     return np.swapaxes(P, -1, -2)
 
 
-def softplus(x_):
-    return np.log(1. + np.exp(x_))
+def softplus(x_: Float[Scalar, "1"]) -> Float[Scalar, "1"]:
+    return np.log(1.0 + np.exp(x_))
     # return np.log(1. + np.exp(-np.abs(x_))) + np.maximum(x_, 1e-24)  # safer version (but derivatve can have issues)
 
 
-def sigmoid(x_):
-    return np.exp(x_) / (np.exp(x_) + 1.)
+def sigmoid(x_: Float[Scalar, "1"]) -> Float[Scalar, "1"]:
+    return np.exp(x_) / (np.exp(x_) + 1.0)
 
 
 def sigmoid_diff(x_):
-    return sigmoid(x_) * (1. - sigmoid(x_))
+    return sigmoid(x_) * (1.0 - sigmoid(x_))
 
 
-def softplus_inv(x_):
+def softplus_inv(x_: Float[Scalar, "1"]) -> Float[Scalar, "1"]:
     """
     Inverse of the softplus positiviy mapping, used for transforming parameters.
     """
@@ -96,31 +102,53 @@ def ensure_diagonal_positive_precision(K):
     return K
 
 
-def predict_from_state(x_test, ind, x, post_mean, post_cov, gain, kernel):
+def log_chol_matrix_det(chol):
+    val = np.square(np.diag(chol))
+    return np.sum(np.log(val))
+
+
+def rotation_matrix(dt: float, omega: float) -> Float[Array, "2 2"]:
+    """
+    Discrete time rotation matrix
+    :param dt: step size [1]
+    :param omega: frequency [1]
+    :return:
+        R: rotation matrix [2, 2]
+    """
+    R = np.array(
+        [
+            [np.cos(omega * dt), -np.sin(omega * dt)],
+            [np.sin(omega * dt), np.cos(omega * dt)],
+        ]
+    )
+    return R
+
+
+# ====================
+# endregion(matrix)
+# ====================
+
+
+def predict_from_state(x_test, ind, x, post_mean, post_cov, gain, kernel: StationaryKernel):
     """
     wrapper function to vectorise predict_at_t_()
     """
-    predict_from_state_func = vmap(
-        predict_from_state_, (0, 0, None, None, None, None, None)
-    )
-    return predict_from_state_func(x_test, ind, x, post_mean, post_cov, gain, kernel)
+
+    def predict_from_state_inner(x_test, ind, x, post_mean, post_cov, gain, kernel):
+        """
+        predict the state distribution at time t by projecting from the neighbouring inducing states
+        """
+        P, T = compute_conditional_statistics(x_test, x, kernel, ind)
+        # joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t:
+        mean_joint = np.block([[post_mean[ind]], [post_mean[ind + 1]]])
+        cross_cov = gain[ind] @ post_cov[ind + 1]
+        cov_joint = np.block([[post_cov[ind], cross_cov], [cross_cov.T, post_cov[ind + 1]]])
+        return P @ mean_joint, P @ cov_joint @ P.T + T
+
+    return vmap(predict_from_state_inner, (0, 0, None, None, None, None, None))(x_test, ind, x, post_mean, post_cov, gain, kernel)
 
 
-def predict_from_state_(x_test, ind, x, post_mean, post_cov, gain, kernel):
-    """
-    predict the state distribution at time t by projecting from the neighbouring inducing states
-    """
-    P, T = compute_conditional_statistics(x_test, x, kernel, ind)
-    # joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t:
-    mean_joint = np.block([[post_mean[ind]],
-                           [post_mean[ind + 1]]])
-    cross_cov = gain[ind] @ post_cov[ind + 1]
-    cov_joint = np.block([[post_cov[ind], cross_cov],
-                          [cross_cov.T, post_cov[ind + 1]]])
-    return P @ mean_joint, P @ cov_joint @ P.T + T
-
-
-def temporal_conditional(X, X_test, mean, cov, gain, kernel):
+def temporal_conditional(X, X_test, mean, cov, gain, kernel: StationaryKernel):
     """
     predict from time X to time X_test give state mean and covariance at X
     """
@@ -129,55 +157,67 @@ def temporal_conditional(X, X_test, mean, cov, gain, kernel):
     mean_aug = np.concatenate([minf, mean, minf])
     cov_aug = np.concatenate([Pinf, cov, Pinf])
     gain = np.concatenate([np.zeros_like(gain[:1]), gain])
-
     # figure out which two training states each test point is located between
-    ind_test = np.searchsorted(X.reshape(-1, ), X_test.reshape(-1, )) - 1
-
+    ind_test = (
+        np.searchsorted(
+            X.reshape(
+                -1,
+            ),
+            X_test.reshape(
+                -1,
+            ),
+        )
+        - 1
+    )
     # project from training states to test locations
     test_mean, test_cov = predict_from_state(X_test, ind_test, X, mean_aug, cov_aug, gain, kernel)
-
     return test_mean, test_cov
 
 
-def predict_from_state_infinite_horizon(x_test, ind, x, post_mean, kernel):
+def predict_from_state_infinite_horizon(x_test, ind, x, post_mean, kernel: StationaryKernel):
     """
     wrapper function to vectorise predict_at_t_()
     """
-    predict_from_state_func = vmap(
-        predict_from_state_infinite_horizon_, (0, 0, None, None, None)
-    )
+
+    def predict_from_state_infinite_horizon_inner(x_test, ind, x, post_mean, kernel: StationaryKernel):
+        """
+        predict the state distribution at time t by projecting from the neighbouring inducing states
+        """
+        P, T = compute_conditional_statistics(x_test, x, kernel, ind)
+        # joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t:
+        mean_joint = np.block([[post_mean[ind]], [post_mean[ind + 1]]])
+        return P @ mean_joint
+
+    predict_from_state_func = vmap(predict_from_state_infinite_horizon_inner, (0, 0, None, None, None))
     return predict_from_state_func(x_test, ind, x, post_mean, kernel)
 
 
-def predict_from_state_infinite_horizon_(x_test, ind, x, post_mean, kernel):
-    """
-    predict the state distribution at time t by projecting from the neighbouring inducing states
-    """
-    P, T = compute_conditional_statistics(x_test, x, kernel, ind)
-    # joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t:
-    mean_joint = np.block([[post_mean[ind]],
-                           [post_mean[ind + 1]]])
-    return P @ mean_joint
-
-
-def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel):
+def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel: StationaryKernel):
     """
     predict from time X to time X_test give state mean and covariance at X
     """
     Pinf = kernel.stationary_covariance()[None, ...]
     minf = np.zeros([1, Pinf.shape[1], 1])
     mean_aug = np.concatenate([minf, mean, minf])
-
     # figure out which two training states each test point is located between
-    ind_test = np.searchsorted(X.reshape(-1, ), X_test.reshape(-1, )) - 1
+    ind_test = (
+        np.searchsorted(
+            X.reshape(
+                -1,
+            ),
+            X_test.reshape(
+                -1,
+            ),
+        )
+        - 1
+    )
 
     # project from training states to test locations
     test_mean = predict_from_state_infinite_horizon(X_test, ind_test, X, mean_aug, kernel)
-
     return test_mean, np.tile(cov[0], [test_mean.shape[0], 1, 1])
 
 
-def compute_conditional_statistics(x_test, x, kernel, ind):
+def compute_conditional_statistics(x_test, x, kernel: StationaryKernel, ind):
     """
     This version uses cho_factor and cho_solve - much more efficient when using JAX
 
@@ -221,14 +261,7 @@ def sum_natural_params_by_group(carry, inputs):
     nat1s = nat1s.at[ind_m].add(nat1_m)
     nat2s = nat2s.at[ind_m].add(nat2_m)
     count = count.at[ind_m].add(1.0)
-    return (nat1s, nat2s, count), 0.
-
-
-def count_indices(carry, inputs):
-    ind_m = inputs
-    count = carry
-    count = count.at[ind_m].add(1.0)
-    return count, 0.
+    return (nat1s, nat2s, count), 0.0
 
 
 def input_admin(t, y, r):
@@ -261,10 +294,17 @@ def input_admin(t, y, r):
     y_train = y[ind, ...]
     r_train = r[ind, ...]
     dt_train = nnp.concatenate([np.array([0.0]), nnp.diff(t_train[:, 0])])
-    return (np.array(t_train, dtype=np.float64), np.array(y_train, dtype=np.float64),
-            np.array(r_train, dtype=np.float64), np.array(dt_train, dtype=np.float64))
+    return (
+        np.array(t_train, dtype=np.float64),
+        np.array(y_train, dtype=np.float64),
+        np.array(r_train, dtype=np.float64),
+        np.array(dt_train, dtype=np.float64),
+    )
 
 
+# ====================
+# region(spatio temporal)
+# ====================
 def create_spatiotemporal_grid(X, Y):
     """
     create a grid of data sized [T, R1, R2]
@@ -308,9 +348,9 @@ def create_spatiotemporal_grid(X, Y):
     Y_all = np.vstack([Y, Y_dummy])
     X_unique, ind = nnp.unique(X_all, axis=0, return_index=True)
     Y_unique = Y_all[ind]
-    grid_shape = (unique_time.shape[0], ) + unique_space.shape
+    grid_shape = (unique_time.shape[0],) + unique_space.shape
     R_grid = X_unique[:, 1:].reshape(grid_shape)
-    Y_grid = Y_unique.reshape(grid_shape[:-1] + (1, ))
+    Y_grid = Y_unique.reshape(grid_shape[:-1] + (1,))
     return unique_time[:, None], R_grid, Y_grid
 
 
@@ -335,6 +375,14 @@ def discretegrid(xy, w, nt):
     return X[:-1, :-1].T, Y[:-1, :-1].T, N.T
 
 
+# ====================
+# endregion(spatio temporal)
+# ====================
+
+
+# ====================
+# region(distribution)
+# ====================
 def gaussian_log_expected_lik(y, post_mean, post_cov, obs_var):
     """
     Calculates the log partition function:
@@ -360,17 +408,8 @@ def gaussian_log_expected_lik(y, post_mean, post_cov, obs_var):
     #     - 0.5 * np.sum(np.log(np.maximum(var, 1e-10)))
     # )
     # version which computes individual parts and outputs vector
-    lZ = (
-        -0.5 * np.log(2 * np.pi)
-        - 0.5 * (y - post_mean) * prec * (y - post_mean)
-        - 0.5 * np.log(np.maximum(var, 1e-10))
-    )
+    lZ = -0.5 * np.log(2 * np.pi) - 0.5 * (y - post_mean) * prec * (y - post_mean) - 0.5 * np.log(np.maximum(var, 1e-10))
     return lZ
-
-
-def log_chol_matrix_det(chol):
-    val = np.square(np.diag(chol))
-    return np.sum(np.log(val))
 
 
 def mvn_logpdf(x, mean, cov, mask=None):
@@ -382,9 +421,9 @@ def mvn_logpdf(x, mean, cov, mask=None):
     if mask is not None:
         # build a mask for computing the log likelihood of a partially observed multivariate Gaussian
         maskv = mask.reshape(-1, 1)
-        x = np.where(maskv, 0., x)
-        mean = np.where(maskv, 0., mean)
-        cov_masked = np.where(maskv + maskv.T, 0., cov)  # ensure masked entries are independent
+        x = np.where(maskv, 0.0, x)
+        mean = np.where(maskv, 0.0, mean)
+        cov_masked = np.where(maskv + maskv.T, 0.0, cov)  # ensure masked entries are independent
         cov = np.where(np.diag(mask), INV2PI, cov_masked)  # ensure masked entries return log like of 0
 
     n = mean.shape[0]
@@ -411,21 +450,14 @@ def mvst_logpdf(x, mean, scale, df, mask=None):
     if mask is not None:
         maskv = mask.reshape(-1, 1)
         # build a mask for computing the log likelihood of a partially observed multivariate Student's t
-        x = np.where(maskv, 0., x)
-        mean = np.where(maskv, 0., mean)
-        scale_masked = np.where(maskv + maskv.T, 0., scale)  # ensure masked entries are independent
+        x = np.where(maskv, 0.0, x)
+        mean = np.where(maskv, 0.0, mean)
+        scale_masked = np.where(maskv + maskv.T, 0.0, scale)  # ensure masked entries are independent
         scale = np.where(np.diag(mask), 1, scale_masked)  # ensure masked entries return log like of 0
 
     log_det = 2 * np.sum(np.log(np.abs(np.diag(scale))))
-    const = (
-            gammaln((df + dim) * 0.5)
-            - gammaln(df * 0.5)
-            - 0.5 * dim * (np.log(df) + np.log(np.pi))
-            - 0.5 * log_det
-    )
-    return const - 0.5 * (df + dim) * np.log(
-        1.0 + (1.0 / df) * np.squeeze((x - mean).T @ solve(scale, (x - mean)))
-    )
+    const = gammaln((df + dim) * 0.5) - gammaln(df * 0.5) - 0.5 * dim * (np.log(df) + np.log(np.pi)) - 0.5 * log_det
+    return const - 0.5 * (df + dim) * np.log(1.0 + (1.0 / df) * np.squeeze((x - mean).T @ solve(scale, (x - mean))))
 
 
 def pep_constant(var, power, mask=None):
@@ -434,14 +466,11 @@ def pep_constant(var, power, mask=None):
     log_diag_chol = np.log(np.abs(np.diag(chol)))
 
     if mask is not None:
-        log_diag_chol = np.where(mask, 0., log_diag_chol)
+        log_diag_chol = np.where(mask, 0.0, log_diag_chol)
         dim -= np.sum(np.array(mask, dtype=int))
 
     logdetvar = 2 * np.sum(log_diag_chol)
-    constant = (
-        0.5 * dim * ((1 - power) * LOG2PI - np.log(power))
-        + 0.5 * (1 - power) * logdetvar
-    )
+    constant = 0.5 * dim * ((1 - power) * LOG2PI - np.log(power)) + 0.5 * (1 - power) * logdetvar
     return constant
 
 
@@ -453,7 +482,7 @@ def mvn_logpdf_and_derivs(x, mean, cov, mask=None):
         # build a mask for computing the log likelihood of a partially observed multivariate Gaussian
         maskv = mask.reshape(-1, 1)
         mean = np.where(maskv, x, mean)
-        cov_masked = np.where(maskv + maskv.T, 0., cov)  # ensure masked entries are independent
+        cov_masked = np.where(maskv + maskv.T, 0.0, cov)  # ensure masked entries are independent
         cov = np.where(np.diag(mask), INV2PI, cov_masked)  # ensure masked entries return log like of 0
 
     n = mean.shape[0]
@@ -479,11 +508,7 @@ def _gaussian_expected_log_lik(y, post_mean, post_cov, var):
     #     - 0.5 * np.sum(((y - post_mean) ** 2 + post_cov) / var)
     # )
     # version which computes individual parts and outputs vector
-    exp_log_lik = (
-        -0.5 * np.log(2 * np.pi)
-        - 0.5 * np.log(var)
-        - 0.5 * ((y - post_mean) ** 2 + post_cov) / var
-    )
+    exp_log_lik = -0.5 * np.log(2 * np.pi) - 0.5 * np.log(var) - 0.5 * ((y - post_mean) ** 2 + post_cov) / var
     return exp_log_lik
 
 
@@ -521,9 +546,9 @@ def gaussian_expected_log_lik(Y, q_mu, q_covar, noise, mask=None):
         # build a mask for computing the log likelihood of a partially observed multivariate Gaussian
         maskv = mask.reshape(-1, 1)
         q_mu = np.where(maskv, Y, q_mu)
-        noise = np.where(maskv + maskv.T, 0., noise)  # ensure masked entries are independent
+        noise = np.where(maskv + maskv.T, 0.0, noise)  # ensure masked entries are independent
         noise = np.where(np.diag(mask), INV2PI, noise)  # ensure masked entries return log like of 0
-        q_covar = np.where(maskv + maskv.T, 0., q_covar)  # ensure masked entries are independent
+        q_covar = np.where(maskv + maskv.T, 0.0, q_covar)  # ensure masked entries are independent
         q_covar = np.where(np.diag(mask), 1e-20, q_covar)  # ensure masked entries return trace term of 0
 
     ml = mvn_logpdf(Y, q_mu, noise)
@@ -545,18 +570,10 @@ def build_joint(ind, mean, cov, smoother_gain):
     """
     joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t
     """
-    mean_joint = np.block([[mean[ind]],
-                           [mean[ind + 1]]])
+    mean_joint = np.block([[mean[ind]], [mean[ind + 1]]])
     cross_cov = smoother_gain[ind] @ cov[ind + 1]
-    cov_joint = np.block([[cov[ind], cross_cov],
-                          [cross_cov.T, cov[ind + 1]]])
+    cov_joint = np.block([[cov[ind], cross_cov], [cross_cov.T, cov[ind + 1]]])
     return mean_joint, cov_joint
-
-
-def set_z_stats(t, z):
-    ind = (np.searchsorted(z.reshape(-1, ), t[:, :1].reshape(-1, )) - 1)
-    num_neighbours = np.array([np.sum(ind == m) for m in range(z.shape[0] - 1)])
-    return ind, num_neighbours
 
 
 def gaussian_first_derivative_wrt_mean(f, m, C, w):
@@ -567,6 +584,25 @@ def gaussian_first_derivative_wrt_mean(f, m, C, w):
 def gaussian_second_derivative_wrt_mean(f, m, C, w):
     invC = inv(C)
     return (invC @ (f - m) @ (f - m).T @ invC - invC) * w
+
+
+# ====================
+# endregion(distribution)
+# ====================
+def set_z_stats(t, z):
+    ind = (
+        np.searchsorted(
+            z.reshape(
+                -1,
+            ),
+            t[:, :1].reshape(
+                -1,
+            ),
+        )
+        - 1
+    )
+    num_neighbours = np.array([np.sum(ind == m) for m in range(z.shape[0] - 1)])
+    return ind, num_neighbours
 
 
 def scaled_squared_euclid_dist(X, X2, ell):
@@ -614,56 +650,37 @@ def broadcasting_elementwise(op, a, b):
     return flatres.reshape(a.shape[0], b.shape[0])
 
 
-def rotation_matrix(dt, omega):
-    """
-    Discrete time rotation matrix
-    :param dt: step size [1]
-    :param omega: frequency [1]
-    :return:
-        R: rotation matrix [2, 2]
-    """
-    R = np.array([
-        [np.cos(omega * dt), -np.sin(omega * dt)],
-        [np.sin(omega * dt),  np.cos(omega * dt)]
-    ])
-    return R
+# region(old)
+# def balance(F: np.ndarray, iters: int) -> np.ndarray:
+#     dim = F.shape[0]
+#     d = np.ones((dim,))
 
+#     def loop_over_iters(carry_, _):
+#         F, d = carry_
 
-def balance(F: np.ndarray,
-            iters: int) -> np.ndarray:
-    dim = F.shape[0]
-    d = np.ones((dim,))
+#         def loop_over_dims(carry, _):
+#             F, d, i = carry
 
-    def loop_over_iters(carry_, _):
-        F, d = carry_
+#             tmp = F[:, i]
+#             tmp = tmp.at[i].set(0.0)
+#             c = np.linalg.norm(tmp, 2)
+#             tmp2 = F[i, :]
+#             tmp2 = tmp2.at[i].set(0.0)
 
-        def loop_over_dims(carry, _):
-            F, d, i = carry
+#             r = np.linalg.norm(tmp2, 2)
+#             f = np.sqrt(r / c)
+#             d = d.at[i].set(d[i] * f)
+#             F = F.at[:, i].set(F[:, i] * f)
+#             F = F.at[i, :].set(F[i, :] / f)
+#             return (F, d, i + 1), d
 
-            tmp = F[:, i]
-            tmp = tmp.at[i].set(0.)
-            c = np.linalg.norm(tmp, 2)
-            tmp2 = F[i, :]
-            tmp2 = tmp2.at[i].set(0.)
+#         (F, d, _), d_all = scan(f=loop_over_dims, init=(F, d, 0), xs=np.zeros(dim))
 
-            r = np.linalg.norm(tmp2, 2)
-            f = np.sqrt(r / c)
-            d = d.at[i].set(d[i] * f)
-            F = F.at[:,i].set(F[:, i] * f)
-            F = F.at[i,:].set(F[i, :] / f)
-            return (F, d, i+1), d
+#         return (F, d), d
 
-        (F, d, _), d_all = scan(f=loop_over_dims,
-                                init=(F, d, 0),
-                                xs=np.zeros(dim))
+#     (_, d), _ = scan(f=loop_over_iters, init=(F, d), xs=np.zeros(iters))
 
-        return (F, d), d
-
-    (_, d), _ = scan(f=loop_over_iters,
-                     init=(F, d),
-                     xs=np.zeros(iters))
-
-    return d
+#     return d
 
 
 # def bitmappify(ax, dpi=None):
@@ -697,3 +714,4 @@ def balance(F: np.ndarray,
 #     # reset view
 #     ax.set_xlim(xl)
 #     ax.set_ylim(yl)
+# endregion(old)

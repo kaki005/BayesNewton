@@ -27,9 +27,9 @@ def blocktensor_to_blockdiagmatrix(blocktensor):
     return np.sum(diag_and_offdiag_components, axis=0)
 
 
-def get_blocks(blockdiagmatrix, D, i):
-    return blockdiagmatrix[0+D*i:D+D*i, 0+D*i:D+D*i]
-
+def process_noise_covariance(A, Pinf):
+    Q = Pinf - A @ Pinf @ transpose(A)
+    return Q
 
 @vmap
 def get_3d_off_diag(offdiag_elems):
@@ -48,7 +48,9 @@ def blockdiagmatrix_to_blocktensor(blockdiagmatrix, N, D):
     """
     return np.array([blockdiagmatrix[i*D:(i+1)*D,i*D:(i+1)*D] for i in range(N)])
 
-
+# ========================
+# region (gaussian)
+# ========================
 def gaussian_conditional(kernel, y, noise_cov, X, X_star=None):
     """
     Compute the GP posterior / predictive distribution using standard Gaussian identities
@@ -145,12 +147,11 @@ def sparse_conditional_post_to_data(kernel, post_mean, post_cov, X, Z):
 
     return mean_f, cov_f
 
-
-def process_noise_covariance(A, Pinf):
-    Q = Pinf - A @ Pinf @ transpose(A)
-    return Q
-
-
+# ========================
+# endregion (gaussian)
+# ========================
+# region(KalmanFilter/RTS Smoother)
+# ========================
 def _sequential_kf(As, Qs, H, ys, noise_covs, m0, P0, masks, return_predict=False):
 
     def body(carry, inputs):
@@ -420,7 +421,11 @@ def kalman_filter_pairs(dt, kernel, y, noise_cov, mask=None, parallel=False):
     else:
         ell, means, covs = _sequential_kf(Apairs, Qpairs, H, y, noise_cov, minfpair, Pinfpair, mask)
     return ell, (means[1:, :state_dim], covs[1:, :state_dim, :state_dim])
-
+ # =================================
+ # endregion(KalmanFilter/RTS Smoother)
+# ========================
+# region (mean field)
+# ========================
 
 def _sequential_kf_mf(As, Qs, H, ys, noise_covs, m0, P0, masks, block_index):
 
@@ -789,6 +794,13 @@ def kalman_filter_pairs_meanfield(dt, kernel, y, noise_cov, parallel=False, bloc
     return ell, (means, covs)
 
 
+
+# ========================
+# endregion (mean field)
+# ========================
+# region (Infinite Horizon)
+# ========================
+
 def dare(A, H, Q, R, Pinit, num_iters=20):
     """
     solve a discrete algebraic Ricatti equation
@@ -948,6 +960,7 @@ def kalman_filter_infinite_horizon(dt, kernel, y, noise_cov, mask=None, parallel
     return ell, (means, covs)
 
 
+
 def rts_dare(A, Q, Pinf, num_iters=20):
     """
     solve a discrete algebraic Ricatti equation
@@ -967,7 +980,6 @@ def rts_dare(A, Q, Pinf, num_iters=20):
                       xs=np.zeros(num_iters))
 
     return X_final
-
 
 def _sequential_rts_ih(fms, Afms, H, gain, return_full):
 
@@ -1180,3 +1192,6 @@ def kalman_filter_infinite_horizon_pairs(dt, kernel, y, noise_cov, parallel=Fals
     covs = (Pdare, cov[:state_dim, :state_dim])
 
     return ell, (means, covs)
+# ========================
+# endregion (Infinite Horizon)
+# ========================

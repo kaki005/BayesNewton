@@ -11,6 +11,8 @@ import itertools
 class Cubature(objax.Module):
 
     def __init__(self, dim=None):
+        self.store :bool
+        """wheter to store calced value."""
         if dim is None:  # dimension of cubature not known upfront
             self.store = False
         else:  # dimension known, store sigma points and weights
@@ -52,7 +54,7 @@ class UnscentedFifthOrder(Cubature):
 class Unscented(UnscentedFifthOrder):
     pass
 
-
+# calc sigma point
 def mvhermgauss(H: int, D: int):
     """
     This function is adapted from GPflow: https://github.com/GPflow/GPflow
@@ -78,7 +80,7 @@ def gauss_hermite(dim=1, num_quad_pts=20):
     Return weights and sigma-points for Gauss-Hermite cubature
     """
     # sigma_pts, weights = hermgauss(num_quad_pts)  # Gauss-Hermite sigma points and weights
-    sigma_pts, weights = mvhermgauss(num_quad_pts, dim)
+    sigma_pts, weights = mvhermgauss(num_quad_pts, dim) # sigma point
     sigma_pts = np.sqrt(2) * sigma_pts.T
     weights = weights.T * np.pi ** (-0.5 * dim)  # scale weights by 1/√π
     return sigma_pts, weights

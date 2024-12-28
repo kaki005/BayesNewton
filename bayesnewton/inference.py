@@ -68,14 +68,12 @@ class InferenceMixin(abc.ABC):
             batch_ind = None
 
         self.update_posterior()  # make sure the posterior is up to date
-
         # use the chosen inference method (VI, EP, ...) to compute the necessary terms for the parameter update
         mean, jacobian, hessian = self.update_variational_params(batch_ind, lr, **kwargs)
         # ---- Newton update ----
-        nat1_n, nat2_n = newton_update(mean, jacobian, hessian)
+        nat1_n, nat2_n = newton_update(mean, jacobian, hessian) # compute narural param
         # -----------------------
         nat1, nat2 = self.group_natural_params(nat1_n, nat2_n, batch_ind)  # only required for SparseMarkov models
-
         diff1 = np.mean(np.abs(nat1 - self.pseudo_likelihood.nat1))
         diff2 = np.mean(np.abs(nat2 - self.pseudo_likelihood.nat2))
 
@@ -84,7 +82,6 @@ class InferenceMixin(abc.ABC):
             nat1=(1 - lr) * self.pseudo_likelihood.nat1 + lr * nat1,
             nat2=(1 - lr) * self.pseudo_likelihood.nat2 + lr * nat2
         )
-
         self.update_posterior()  # recompute posterior with new params
 
         return (mean, jacobian, hessian), (diff1, diff2)  # output state to be used in linesearch methods
@@ -182,7 +179,6 @@ class VariationalInference(InferenceMixin):
             cov_f,
             cubature
         )
-
         if ensure_psd:
             d2ell_dm2 = -ensure_diagonal_positive_precision(-d2ell_dm2)  # manual fix to avoid non-PSD precision
 
@@ -218,7 +214,6 @@ class VariationalInference(InferenceMixin):
             scale * np.nansum(ell)  # nansum accounts for missing data
             - KL
         )
-
         return variational_free_energy
 
 
@@ -903,7 +898,7 @@ class QuasiNewton(QuasiNewtonBase, Newton):
 
         if self.mean_prev.value.shape[0] != mean_f.shape[0]:
             B = self.hessian_approx.value.at[ind].set(B)
-            jacobian = self.jacobian_prev.value.at[ind].set(jacobian) 
+            jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
         return mean_f, jacobian, B, (mean_f, jacobian, B)
@@ -1006,7 +1001,7 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
 
         if self.mean_prev.value.shape[0] != cav_mean_f.shape[0]:
             B = self.hessian_approx.value.at[ind].set(B)
-            jacobian = self.jacobian_prev.value.at[ind].set(jacobian) 
+            jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             cav_mean_f = self.mean_prev.value.at[ind].set(cav_mean_f)
 
 
@@ -1119,7 +1114,7 @@ class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinear
 
         if self.mean_prev.value.shape[0] != mean_f.shape[0]:
             B = self.hessian_approx.value.at[ind].set(B)
-            jacobian = self.jacobian_prev.value.at[ind].set(jacobian) 
+            jacobian = self.jacobian_prev.value.at[ind].set(jacobian)
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
         return mean_f, jacobian, B[:, :self.func_dim, :self.func_dim], (mean_var, jacobian_mean_var, B)
