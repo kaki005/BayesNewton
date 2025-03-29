@@ -7,7 +7,7 @@ dependencies = [
     "jax>=0.4.38",
     "jaxlib>=0.4.38",
     "objax>=1.8.0",
-    "numpy>=2.2.1",
+    "numpy>=2.1",
     "tensorflow-probability>=0.25.0",
     "jaxtyping>=0.2.36",
 ]
