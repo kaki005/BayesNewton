@@ -8,7 +8,6 @@ from jax.scipy.linalg import cho_factor, cho_solve, cholesky
 from jax.scipy.special import gammaln
 from jaxtyping import Array, Float, Scalar
 
-from .kernels import StationaryKernel
 
 LOG2PI = math.log(2 * math.pi)
 INV2PI = (2 * math.pi) ** -1
@@ -102,10 +101,6 @@ def ensure_diagonal_positive_precision(K):
     return K
 
 
-def log_chol_matrix_det(chol):
-    val = np.square(np.diag(chol))
-    return np.sum(np.log(val))
-
 
 def rotation_matrix(dt: float, omega: float) -> Float[Array, "2 2"]:
     """
@@ -129,7 +124,7 @@ def rotation_matrix(dt: float, omega: float) -> Float[Array, "2 2"]:
 # ====================
 
 
-def predict_from_state(x_test, ind, x, post_mean, post_cov, gain, kernel: StationaryKernel):
+def predict_from_state(x_test, ind, x, post_mean, post_cov, gain, kernel):
     """
     wrapper function to vectorise predict_at_t_()
     """
@@ -148,7 +143,7 @@ def predict_from_state(x_test, ind, x, post_mean, post_cov, gain, kernel: Statio
     return vmap(predict_from_state_inner, (0, 0, None, None, None, None, None))(x_test, ind, x, post_mean, post_cov, gain, kernel)
 
 
-def temporal_conditional(X, X_test, mean, cov, gain, kernel: StationaryKernel):
+def temporal_conditional(X, X_test, mean, cov, gain, kernel):
     """
     predict from time X to time X_test give state mean and covariance at X
     """
@@ -174,12 +169,12 @@ def temporal_conditional(X, X_test, mean, cov, gain, kernel: StationaryKernel):
     return test_mean, test_cov
 
 
-def predict_from_state_infinite_horizon(x_test, ind, x, post_mean, kernel: StationaryKernel):
+def predict_from_state_infinite_horizon(x_test, ind, x, post_mean, kernel):
     """
     wrapper function to vectorise predict_at_t_()
     """
 
-    def predict_from_state_infinite_horizon_inner(x_test, ind, x, post_mean, kernel: StationaryKernel):
+    def predict_from_state_infinite_horizon_inner(x_test, ind, x, post_mean, kernel):
         """
         predict the state distribution at time t by projecting from the neighbouring inducing states
         """
@@ -192,7 +187,7 @@ def predict_from_state_infinite_horizon(x_test, ind, x, post_mean, kernel: Stati
     return predict_from_state_func(x_test, ind, x, post_mean, kernel)
 
 
-def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel: StationaryKernel):
+def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel):
     """
     predict from time X to time X_test give state mean and covariance at X
     """
@@ -217,7 +212,7 @@ def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel: St
     return test_mean, np.tile(cov[0], [test_mean.shape[0], 1, 1])
 
 
-def compute_conditional_statistics(x_test, x, kernel: StationaryKernel, ind):
+def compute_conditional_statistics(x_test, x, kernel, ind):
     """
     This version uses cho_factor and cho_solve - much more efficient when using JAX
 
@@ -658,70 +653,3 @@ def broadcasting_elementwise(op, a, b):
     """
     flatres = op(np.reshape(a, [-1, 1]), np.reshape(b, [1, -1]))
     return flatres.reshape(a.shape[0], b.shape[0])
-
-
-# region(old)
-# def balance(F: np.ndarray, iters: int) -> np.ndarray:
-#     dim = F.shape[0]
-#     d = np.ones((dim,))
-
-#     def loop_over_iters(carry_, _):
-#         F, d = carry_
-
-#         def loop_over_dims(carry, _):
-#             F, d, i = carry
-
-#             tmp = F[:, i]
-#             tmp = tmp.at[i].set(0.0)
-#             c = np.linalg.norm(tmp, 2)
-#             tmp2 = F[i, :]
-#             tmp2 = tmp2.at[i].set(0.0)
-
-#             r = np.linalg.norm(tmp2, 2)
-#             f = np.sqrt(r / c)
-#             d = d.at[i].set(d[i] * f)
-#             F = F.at[:, i].set(F[:, i] * f)
-#             F = F.at[i, :].set(F[i, :] / f)
-#             return (F, d, i + 1), d
-
-#         (F, d, _), d_all = scan(f=loop_over_dims, init=(F, d, 0), xs=np.zeros(dim))
-
-#         return (F, d), d
-
-#     (_, d), _ = scan(f=loop_over_iters, init=(F, d), xs=np.zeros(iters))
-
-#     return d
-
-
-# def bitmappify(ax, dpi=None):
-#     """
-#     # Convert vector axes content to raster (bitmap) images
-#     :param ax: the figure axis
-#     :param dpi: dots per inch
-#     """
-#     fig = ax.figure
-#     # safe plot without axes
-#     ax.set_axis_off()
-#     fig.savefig('temp.png', dpi=dpi, transparent=True)
-#     ax.set_axis_on()
-#     # remember geometry
-#     xl = ax.get_xlim()
-#     yl = ax.get_ylim()
-#     xb = ax.bbox._bbox.corners()[:, 0]
-#     xb = (min(xb), max(xb))
-#     yb = ax.bbox._bbox.corners()[:, 1]
-#     yb = (min(yb), max(yb))
-#     # compute coordinates to place bitmap image later
-#     xb = (- xb[0] / (xb[1] - xb[0]), (1 - xb[0]) / (xb[1] - xb[0]))
-#     xb = (xb[0] * (xl[1] - xl[0]) + xl[0], xb[1] * (xl[1] - xl[0]) + xl[0])
-#     yb = (- yb[0] / (yb[1] - yb[0]), (1 - yb[0]) / (yb[1] - yb[0]))
-#     yb = (yb[0] * (yl[1] - yl[0]) + yl[0], yb[1] * (yl[1] - yl[0]) + yl[0])
-#     # replace the dots by the bitmap
-#     del ax.collections[:]
-#     del ax.lines[:]
-#     ax.imshow(read_png('temp.png'), origin='upper',
-#               aspect='auto', extent=(xb[0], xb[1], yb[0], yb[1]), label='_nolegend_')
-#     # reset view
-#     ax.set_xlim(xl)
-#     ax.set_ylim(yl)
-# endregion(old)
