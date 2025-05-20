@@ -134,8 +134,7 @@ class MarkovVariationalGP(VariationalInference, MarkovGaussianProcess):
 
 class SparseMarkovVariationalGP(VariationalInference, SparseMarkovGaussianProcess):
     """
-    Sparse Markov variational Gaussian process: a sparse VGP with inducing states, where the posterior is computed via
-    (spatio-temporal) filtering and smoothing [1, 2].
+    Sparse Markov variational Gaussian process: a sparse VGP with inducing states, where the posterior is computed via (spatio-temporal) filtering and smoothing [1, 2].
     :param kernel: a kernel object
     :param likelihood: a likelihood object
     :param X: inputs

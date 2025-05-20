@@ -571,13 +571,21 @@ def compute_cavity(post_mean, post_cov, site_nat1, site_nat2, power, jitter=1e-8
     return cav_mean, cav_cov
 
 
-def build_joint(ind, mean, cov, smoother_gain):
+def build_joint(ind, mean, cov, smoother_gain)->tuple[np.ndarray, np.ndarray]:
+    """ joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t
+
+    Args:
+        ind (int): supplementary point index
+        mean (np.ndarray): 平均
+        cov (np.ndarray): 共分散行列
+        smoother_gain (_type_): _description_
+
+    Returns:
+        mean_joint, cov_joint: (u_t, u_t+1)の平均と共分散行列
     """
-    joint posterior (i.e. smoothed) mean and covariance of the states [u_, u+] at time t
-    """
-    mean_joint = np.block([[mean[ind]], [mean[ind + 1]]])
-    cross_cov = smoother_gain[ind] @ cov[ind + 1]
-    cov_joint = np.block([[cov[ind], cross_cov], [cross_cov.T, cov[ind + 1]]])
+    mean_joint = np.block([[mean[ind]], [mean[ind + 1]]]) # [u_t, u_t+]
+    cross_cov = smoother_gain[ind] @ cov[ind + 1]# [u_t u_t+^T]
+    cov_joint = np.block([[cov[ind], cross_cov], [cross_cov.T, cov[ind + 1]]])# (u_t, u_t+1)の共分散行列
     return mean_joint, cov_joint
 
 

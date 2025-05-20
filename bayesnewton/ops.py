@@ -398,10 +398,8 @@ def kalman_filter_pairs(dt, kernel, y, noise_cov, mask=None, parallel=False):
     zeros = np.zeros([state_dim, state_dim])
     Pinfpair = np.block([[Pinf, zeros], [zeros, Pinf]])
     minfpair = np.block([[minf], [minf]])
-
     As = vmap(kernel.state_transition)(dt)
     Qs = vmap(process_noise_covariance, [0, None])(As, Pinf)
-
     def construct_pair(A, Q):
         Apair = np.block([[zeros, np.eye(state_dim)], [zeros, A]])
         Qpair = np.block(

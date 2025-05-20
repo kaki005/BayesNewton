@@ -134,7 +134,9 @@ class BaseModel(objax.Module):
         self.posterior_mean = objax.StateVar(np.zeros([self.num_data, self.func_dim, 1]))
         self.posterior_variance = objax.StateVar(np.tile(np.eye(self.func_dim), [self.num_data, 1, 1]))
         self.ind = np.arange(self.num_data)
+        """各データがどの補助点に割当たっているtか"""
         self.num_neighbours = np.ones(self.num_data)
+        """各補助点が担当しているデータ数"""
         self.mask_y = np.isnan(self.Y).reshape(Y.shape[0], Y.shape[1])
         if self.func_dim == self.obs_dim:
             self.mask_pseudo_y = self.mask_y
@@ -174,7 +176,7 @@ class BaseModel(objax.Module):
         mean_y, var_y = vmap(self.likelihood.predict, (0, 0, None))(mean_f, var_f, cubature)
         return np.squeeze(mean_y), np.squeeze(var_y)
 
-    def negative_log_predictive_density(self, X, Y, R=None, cubature=None):
+    def negative_log_predictive_density(self, X: np.ndarray, Y : np.ndarray, R=None, cubature=None):
         predict_mean, predict_var = self.predict(X, R)
         if Y.ndim < 2:
             Y = Y.reshape(-1, 1)
@@ -995,7 +997,6 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
                                                           filter_cov,
                                                           return_full=True,
                                                           parallel=self.parallel)
-
         minf, Pinf = self.minf[None, ...], self.kernel.stationary_covariance()[None, ...]
         mean_aug = np.concatenate([minf, smoother_mean, minf])
         cov_aug = np.concatenate([Pinf, smoother_cov, Pinf])
@@ -1004,7 +1005,6 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         post_mean, post_cov = vmap(build_joint, [0, None, None, None])(
             np.arange(self.num_transitions), mean_aug, cov_aug, gain
         )
-
         self.posterior_mean.value, self.posterior_variance.value = post_mean, post_cov
 
     def compute_log_lik(self, pseudo_y=None, pseudo_var=None):
@@ -1030,7 +1030,7 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         kl = expected_density_pseudo - log_lik_pseudo  # KL[approx_post || prior]
         return kl
 
-    def predict(self, X, R=None):
+    def predict(self, X: np.ndarray, R=None):
         """
         predict at new test locations X
         """
@@ -1052,10 +1052,8 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
                                                           filter_cov,
                                                           return_full=True,
                                                           parallel=self.parallel)
-
         # predict the state distribution at the test time steps
-        state_mean, state_cov = self.temporal_conditional(self.Z.value, X, smoother_mean, smoother_cov,
-                                                          gain, self.kernel)
+        state_mean, state_cov = self.temporal_conditional(self.Z.value, X, smoother_mean, smoother_cov, gain, self.kernel)
         # extract function values from the state:
         H = self.kernel.measurement_model()
         if self.spatio_temporal:
