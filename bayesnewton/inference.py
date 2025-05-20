@@ -28,7 +28,9 @@ def newton_update(mean, jacobian, hessian):
 
     return pseudo_likelihood_nat1, pseudo_likelihood_nat2
 
-
+# ======================================
+# region (InferenceMixin)
+# ======================================
 class InferenceMixin(abc.ABC):
     """
     The approximate inference class. To be used as a Mixin, to add inference functionality to the model class.
@@ -86,8 +88,11 @@ class InferenceMixin(abc.ABC):
 
     def energy(self, batch_ind=None, **kwargs):
         raise NotImplementedError
+# endregion (InferenceMixin)
 
-
+# ======================================
+# region (Newton)
+# ======================================
 class Newton(InferenceMixin):
     """
     Newton = Laplace
@@ -142,8 +147,11 @@ class Newton(InferenceMixin):
 
 
 Laplace = Newton
+# endregion (Newton)
 
-
+# ======================================
+# region (VariationalInference)
+# ======================================
 class VariationalInference(InferenceMixin):
     """
     Natural gradient VI (using the conjugate-computation VI approach)
@@ -206,8 +214,12 @@ class VariationalInference(InferenceMixin):
             - KL
         )
         return variational_free_energy
+# endregion (VariationalInference)
 
 
+# =========================
+# region (ExpectationPropagation)
+# =========================
 class ExpectationPropagation(InferenceMixin):
     """
     Expectation propagation (EP)
@@ -418,6 +430,11 @@ class PosteriorLinearisation2ndOrder(PosteriorLinearisation):
         else:
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
+# endregion (ExpectationPropagation)
+
+# ======================================
+# region (Taylor)
+# ======================================
 
 
 class Taylor(Newton):
@@ -469,7 +486,11 @@ class Taylor(Newton):
 
 ExtendedKalmanSmoother = Taylor
 
+# endregion (Taylor)
 
+# ======================================
+# region (GaussNewton)
+# ======================================
 class GaussNewton(Newton):
     """
     Gauss-Newton
@@ -491,8 +512,11 @@ class GaussNewton(Newton):
         else:
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
+# endregion (GaussNewton)
 
-
+# ======================================
+# region (VariationalGaussNewton)
+# ======================================
 class VariationalGaussNewton(VariationalInference):
     """
     Variational Gauss-Newton
@@ -516,8 +540,11 @@ class VariationalGaussNewton(VariationalInference):
         else:
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
+# endregion (VariationalGaussNewton)
 
-
+# ======================================
+# region (PosteriorLinearisation2ndOrderGaussNewton)
+# ======================================
 class PosteriorLinearisation2ndOrderGaussNewton(PosteriorLinearisation):
     """ """
 
@@ -548,7 +575,11 @@ class PosteriorLinearisation2ndOrderGaussNewton(PosteriorLinearisation):
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
 
+# endregion (PosteriorLinearisation2ndOrderGaussNewton)
 
+# ======================================
+# region (NewtonRiemann)
+# ======================================
 class NewtonRiemann(Newton):
     """ """
 
@@ -578,7 +609,11 @@ class NewtonRiemann(Newton):
 
 
 LaplaceRiemann = NewtonRiemann
+# endregion (NewtonRiemann)
 
+# ======================================
+# region(VariationalInferenceRiemann)
+# ======================================
 
 class VariationalInferenceRiemann(VariationalInference):
     """
@@ -614,8 +649,11 @@ class VariationalInferenceRiemann(VariationalInference):
             G = self.pseudo_likelihood.nat2[ind] + hessian  # TODO: sort out batching here?
             hessian_psd = hessian - 0.5 * lr * (G @ self.pseudo_likelihood.covariance[ind] @ G)
             return self.posterior_mean.value[ind], jacobian, hessian_psd  # sparse Markov case
+# endregion(VariationalInferenceRiemann)
 
-
+# ======================================
+# region (ExpectationPropagationRiemann)
+# ======================================
 class ExpectationPropagationRiemann(ExpectationPropagation):
     """
     Expectation propagation (EP) with PSD constraints via Riemannian gradients
@@ -661,7 +699,11 @@ class ExpectationPropagationRiemann(ExpectationPropagation):
             G = self.pseudo_likelihood.nat2[ind] + hessian  # TODO: sort out batching here?
             hessian_psd = hessian - 0.5 * lr * (G @ self.pseudo_likelihood.covariance[ind] @ G)
             return cavity_mean[ind], jacobian, hessian_psd  # sparse Markov case
+# endregion (ExpectationPropagationRiemann)
 
+# ======================================
+# region(PosteriorLinearisation2ndOrderRiemann)
+# ======================================
 
 class PosteriorLinearisation2ndOrderRiemann(PosteriorLinearisation2ndOrder):
     """ """
@@ -692,6 +734,7 @@ class PosteriorLinearisation2ndOrderRiemann(PosteriorLinearisation2ndOrder):
             hessian_psd = hessian - 0.5 * lr * (G @ self.pseudo_likelihood.covariance[ind] @ G)
             return self.posterior_mean.value[ind], jacobian, hessian_psd  # sparse Markov case
 
+# endregion(PosteriorLinearisation2ndOrderRiemann)
 
 def bfgs(mean, jacobian, mean_prev, jacobian_prev, B_prev):
     """The BFGS update is guaranteed to result in PSD updates only if sg < 0"""
@@ -738,6 +781,9 @@ def damped_bfgs_modified(mean, jacobian, mean_prev, jacobian_prev, B_prev, dampi
     return B_new  # convert back to NSD
 
 
+# ======================================
+# region (QuasiNewtonBase):
+# ======================================
 class QuasiNewtonBase(abc.ABC):
     num_data: float
     func_dim: float
@@ -787,8 +833,11 @@ class QuasiNewtonBase(abc.ABC):
 
         # return (mean, jacobian, hessian), quasi_newton_state  # output state to be used in linesearch methods
         return (mean, jacobian, hessian), (diff1, diff2)  # output state to be used in linesearch methods
+# endregion (QuasiNewtonBase):
 
-
+# ======================================
+# region (QuasiNewton):
+# ======================================
 class QuasiNewton(QuasiNewtonBase, Newton):
     """
     TODO: implement grouped update to enable sparse markov inference
@@ -824,8 +873,11 @@ class QuasiNewton(QuasiNewtonBase, Newton):
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
         return mean_f, jacobian, B, (mean_f, jacobian, B)
+# endregion (QuasiNewton)
 
-
+# ======================================
+# region (VariationalQuasiNewton)
+# ======================================
 class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
     """
     TODO: implement grouped update to enable sparse markov inference
@@ -870,7 +922,10 @@ class VariationalQuasiNewton(QuasiNewtonBase, VariationalInference):
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
         return mean_f, jacobian, B[:, : self.func_dim, : self.func_dim], (mean_var, jacobian_mean_var, B)
-
+# endregion (VariationalQuasiNewton)
+# ======================================
+# region (ExpectationPropagationQuasiNewton)
+# ======================================
 
 class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation):
     """
@@ -923,7 +978,9 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
 
         return cav_mean_f, jacobian, hessian, (cavity_mean_var, jacobian_unscaled_mean_var, B)
 
+# endregion (ExpectationPropagationQuasiNewton)
 
+# region (old)
 # class PosteriorLinearisationQuasiNewton(QuasiNewtonBase, PosteriorLinearisation):
 #     """
 #     Quasi-Newton (BFGS) Posterior Linearisation (PL)
@@ -989,7 +1046,11 @@ class ExpectationPropagationQuasiNewton(QuasiNewtonBase, ExpectationPropagation)
 #             mean_f = index_update(self.mean_prev.value, index[ind], mean_f)
 #
 #         return mean_f, jacobian, B[:, :self.func_dim, :self.func_dim], (mean_var, jacobian_mean_var, B)
+# endregion (old)
 
+# ======================================
+# region(PosteriorLinearisation2ndOrderQuasiNewton)
+# ======================================
 
 class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinearisation):
     """ """
@@ -1034,3 +1095,4 @@ class PosteriorLinearisation2ndOrderQuasiNewton(QuasiNewtonBase, PosteriorLinear
             mean_f = self.mean_prev.value.at[ind].set(mean_f)
 
         return mean_f, jacobian, B[:, : self.func_dim, : self.func_dim], (mean_var, jacobian_mean_var, B)
+# endregion(PosteriorLinearisation2ndOrderQuasiNewton)

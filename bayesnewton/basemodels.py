@@ -952,13 +952,11 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         eyes = np.tile(np.eye(2 * self.state_dim), [self.num_transitions, 1, 1])
 
         # nat2 = 1e-8 * eyes
-
         # initialise to match MarkovGP / GP on first step (when Z=X):
         nat2 = (1e-8*eyes).at[:-1, self.state_dim, self.state_dim].set(1e-2)
 
         # initialise to match old implementation:
         # nat2 = (1 / 99) * eyes
-
         self.pseudo_likelihood = GaussianDistribution(
             zeros,
             inv_vmap(nat2)
@@ -1098,18 +1096,16 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         else:
             self.conditional_mean = H @ P  # W
             conditional_cov = H @ T @ transpose(H)  # nu
-
-        mean_f = self.conditional_mean @ post_mean
-        cov_f = self.conditional_mean @ post_cov @ transpose(self.conditional_mean) + conditional_cov
-
+        mean_f = self.conditional_mean @ post_mean # 観測平均
+        cov_f = self.conditional_mean @ post_cov @ transpose(self.conditional_mean) + conditional_cov   # 観測共分散
         return mean_f, cov_f
 
     def conditional_data_to_posterior(self, mean_f, cov_f):
         """
         conditional_posterior_to_data() must be run first so that self.conditional_mean is set
         """
-        mean_q = transpose(self.conditional_mean) @ mean_f
-        cov_q = transpose(self.conditional_mean) @ cov_f @ self.conditional_mean
+        mean_q = transpose(self.conditional_mean) @ mean_f  # 観測平均
+        cov_q = transpose(self.conditional_mean) @ cov_f @ self.conditional_mean # 観測共分散
         return mean_q, cov_q
 
     def group_natural_params(self, nat1_n, nat2_n, batch_ind=None):

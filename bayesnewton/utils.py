@@ -214,7 +214,10 @@ def temporal_conditional_infinite_horizon(X, X_test, mean, cov, gain, kernel):
 
 def compute_conditional_statistics(x_test, x, kernel, ind):
     """
+    Sparse Algorithms for Markovian Gaussian Processesより
+
     This version uses cho_factor and cho_solve - much more efficient when using JAX
+
 
     Predicts marginal states at new time points. (new time points should be sorted)
     Calculates the conditional density:
@@ -230,11 +233,11 @@ def compute_conditional_statistics(x_test, x, kernel, ind):
     """
     dt_fwd = x_test[..., 0] - x[ind, 0]
     dt_back = x[ind + 1, 0] - x_test[..., 0]
-    A_fwd = kernel.state_transition(dt_fwd)
-    A_back = kernel.state_transition(dt_back)
+    A_fwd = kernel.state_transition(dt_fwd) # A_{m,x}
+    A_back = kernel.state_transition(dt_back)# A_{x,m+1}
     Pinf = kernel.stationary_covariance()
-    Q_fwd = Pinf - A_fwd @ Pinf @ A_fwd.T
-    Q_back = Pinf - A_back @ Pinf @ A_back.T
+    Q_fwd = Pinf - A_fwd @ Pinf @ A_fwd.T       # Q_{m, x}
+    Q_back = Pinf - A_back @ Pinf @ A_back.T    # Q_{x, m+1}
     A_back_Q_fwd = A_back @ Q_fwd
     Q_mp = Q_back + A_back @ A_back_Q_fwd.T
 
@@ -243,14 +246,15 @@ def compute_conditional_statistics(x_test, x, kernel, ind):
     Q_mp_inv_A_back = cho_solve(chol_Q_mp, A_back)  # V = Q₋₊⁻¹ Aₜ₊
 
     # The conditional_covariance T = Q₋ₜ - Q₋ₜAₜ₊ᵀQ₋₊⁻¹Aₜ₊Q₋ₜ == Q₋ₜ - Q₋ₜᵀAₜ₊ᵀL⁻ᵀL⁻¹Aₜ₊Q₋ₜ
-    T = Q_fwd - A_back_Q_fwd.T @ Q_mp_inv_A_back @ Q_fwd
+    T = Q_fwd - A_back_Q_fwd.T @ Q_mp_inv_A_back @ Q_fwd # (28)
     # W = Q₋ₜAₜ₊ᵀQ₋₊⁻¹
-    W = Q_fwd @ Q_mp_inv_A_back.T
-    P = np.concatenate([A_fwd - W @ A_back @ A_fwd, W], axis=-1)
+    W = Q_fwd @ Q_mp_inv_A_back.T    # R2 (30)
+    P = np.concatenate([A_fwd - W @ A_back @ A_fwd, W], axis=-1)    # R = [R1, R2]
     return P, T
 
 
 def sum_natural_params_by_group(carry, inputs):
+    """補助点ごとにnatural parameterをまとめる"""
     ind_m, nat1_m, nat2_m = inputs
     nat1s, nat2s, count = carry
     nat1s = nat1s.at[ind_m].add(nat1_m)
