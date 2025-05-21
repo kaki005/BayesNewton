@@ -217,9 +217,9 @@ class VariationalInference(InferenceMixin):
 # endregion (VariationalInference)
 
 
-# =========================
+# ==================================
 # region (ExpectationPropagation)
-# =========================
+# ==================================
 class ExpectationPropagation(InferenceMixin):
     """
     Expectation propagation (EP)
@@ -309,7 +309,11 @@ class ExpectationPropagation(InferenceMixin):
         ep_energy = -(lZ + 1.0 / self.power * (scale * np.nansum(lel) - np.nansum(lel_pseudo)))
 
         return ep_energy
+# endregion (ExpectationPropagation)
 
+# ==================================
+# region (PosteriorLinearisation)
+# ==================================
 
 class PosteriorLinearisation(InferenceMixin):
     """
@@ -430,7 +434,7 @@ class PosteriorLinearisation2ndOrder(PosteriorLinearisation):
         else:
             ind = self.ind[batch_ind]
             return self.posterior_mean.value[ind], jacobian, hessian  # sparse Markov case
-# endregion (ExpectationPropagation)
+# endregion (PosteriorLinearisation)
 
 # ======================================
 # region (Taylor)

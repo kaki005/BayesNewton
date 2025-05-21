@@ -22,6 +22,9 @@ from .utils import (mvn_logpdf, mvn_logpdf_and_derivs, mvst_logpdf,
 LOG2PI = math.log(2 * math.pi)
 from typing import Callable
 
+# =================================
+# region (GaussNewtonMixin)
+# =================================
 
 class GaussNewtonMixin(abc.ABC):
     conditional_moments: classmethod
@@ -155,6 +158,11 @@ class GaussNewtonMixin(abc.ABC):
 
     # endregion(slr_log_normaliser)
 
+# endregion (GaussNewtonMixin)
+
+# =================================
+# region (PartialGaussNewtonMixin)
+# =================================
 
 class PartialGaussNewtonMixin(GaussNewtonMixin):
     def gauss_newton(self, y, f):
@@ -183,7 +191,11 @@ class PartialGaussNewtonMixin(GaussNewtonMixin):
         jacobian = -J.T @ G + ZJ
         hessian_approx = -J.T @ J - ZJ.T @ ZJ
         return log_target, jacobian, hessian_approx
+# endregion (PartialGaussNewtonMixin)
 
+# =================================
+# region(GeneralisedGaussNewtonMixin)
+# =================================
 
 class GeneralisedGaussNewtonMixin(abc.ABC):
     """
@@ -285,7 +297,12 @@ class GeneralisedGaussNewtonMixin(abc.ABC):
 
     def slr_residual_generalised_hessian(self, y, mean, cov, chol_omega, cubature=None):
         return np.squeeze(jacrev(self.slr_residual_generalised_jacobian, argnums=1)(y, mean, cov, chol_omega, cubature), axis=-1)
+# endregion(GeneralisedGaussNewtonMixin)
 
+
+# =================================
+# region(Likelihood)
+# =================================
 
 class Likelihood(objax.Module):
     """
@@ -549,7 +566,12 @@ class Likelihood(objax.Module):
 
     def expected_conditional_mean(self, mean, cov, cubature=None):
         return expected_conditional_mean_cubature(self, mean, cov, cubature)
+# endregion(Likelihood)
 
+
+# =================================
+# region (MultiLatentLikelihood)
+# =================================
 
 class MultiLatentLikelihood(Likelihood):
     """ """
@@ -691,6 +713,11 @@ class MultiLatentLikelihood(Likelihood):
         """
         return predict_cubature(self, mean_f, var_f, cubature)
 
+# endregion (MultiLatentLikelihood)
+
+# =================================
+# region(Gaussian)
+# =================================
 
 class Gaussian(Likelihood, GaussNewtonMixin):
     """
@@ -803,6 +830,11 @@ class Gaussian(Likelihood, GaussNewtonMixin):
     def predict(self, mean_f, var_f, cubature=None):
         return mean_f, var_f + self.variance
 
+# endregion(Gaussian)
+# ================================
+# region(Bernoulli)
+# ================================
+
 
 class Bernoulli(Likelihood, GeneralisedGaussNewtonMixin):
     """
@@ -860,7 +892,11 @@ class Bernoulli(Likelihood, GeneralisedGaussNewtonMixin):
         """
         return self.link_fn(f), self.link_fn(f) - (self.link_fn(f) ** 2)
 
+# endregion(Bernoulli)
 
+# ================================
+# region (Probit)
+# ================================
 class Probit(Bernoulli):
     """
     The probit likelihood = Bernoulli likelihood with probit link.
@@ -875,7 +911,11 @@ Erf = Probit
 The error function likelihood = probit = Bernoulli likelihood with probit link.
 """
 
+# endregion (Probit)
 
+# ================================
+# region (Logit)
+# ================================
 class Logit(Bernoulli):
     """
     The logit likelihood = Bernoulli likelihood with logit link.
@@ -889,8 +929,11 @@ Logistic = Logit
 """
 The logistic likelihood = logit = Bernoulli likelihood with logit link.
 """
+# endregion (Logit)
 
-
+# ================================
+# region (Poisson)
+# ================================
 class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
     """
     TODO: tidy docstring
@@ -898,7 +941,7 @@ class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
         p(yₙ|fₙ) = Poisson(fₙ) = μʸ exp(-μ) / yₙ!
     where μ = g(fₙ) = mean = variance is the Poisson intensity.
     yₙ is non-negative integer count data.
-    No closed form moment matching is available, se we default to using cubature.
+    No closed form moment matching is available, so we default to using cubature.
 
     Letting Zy = gamma(yₙ+1) = yₙ!, we get log p(yₙ|fₙ) = log(g(fₙ))yₙ - g(fₙ) - log(Zy)
     The larger the intensity μ, the stronger the likelihood resembles a Gaussian
@@ -1007,8 +1050,12 @@ class Poisson(Likelihood, GeneralisedGaussNewtonMixin):
         # Compute second derivative:
         d2E_dm2 = -exp_mean_cov
         return exp_log_lik, dE_dm, d2E_dm2.reshape(-1, 1)
+# endregion (Poisson)
 
 
+# ================================
+# region (StudentsT)
+# ================================
 class StudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Student's t likelihood.
@@ -1039,7 +1086,11 @@ class StudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     def conditional_moments(self, f):
         return f, (self.scale**2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
 
+# endregion (StudentsT)
 
+# ================================
+# region (Beta)
+# ================================
 class Beta(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Beta likelihood.
@@ -1085,7 +1136,11 @@ class Beta(Likelihood, GeneralisedGaussNewtonMixin):
         mean = self.link_fn(f)
         return mean, (mean - mean**2) / (self.scale + 1.0)
 
+# endregion (Beta)
 
+# ================================
+# region (Gamma)
+# ================================
 class Gamma(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Gamma likelihood.
@@ -1126,7 +1181,11 @@ def negative_binomial(m, y, alpha):
     k = 1 / alpha
     return gammaln(k + y) - gammaln(y + 1) - gammaln(k) + y * np.log(m / (m + k)) - k * np.log(1 + m * alpha)
 
+# endregion (Gamma)
 
+# ================================
+# region (NegativeBinomial)
+# ================================
 class NegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
     """
     BinTayyash et. al. 2021: Non-Parametric Modelling of Temporal and Spatial Counts Data From RNA-SEQ Experiments
@@ -1163,7 +1222,11 @@ class NegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
         conditional_covariance = conditional_expectation + conditional_expectation**2 * self.alpha
         return conditional_expectation, conditional_covariance
 
+# endregion (NegativeBinomial)
 
+# ================================
+# region (ZeroInflatedNegativeBinomial)
+# ================================
 class ZeroInflatedNegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
     """
     BinTayyash et. al. 2021: Non-Parametric Modelling of Temporal and Spatial Counts Data From RNA-SEQ Experiments
@@ -1210,8 +1273,11 @@ class ZeroInflatedNegativeBinomial(Likelihood, GeneralisedGaussNewtonMixin):
         conditional_expectation = m * (1 - psi)
         conditional_covariance = conditional_expectation * (1 + m * (psi + self.alpha))
         return conditional_expectation, conditional_covariance
+# endregion (ZeroInflatedNegativeBinomial)
 
-
+# ================================
+# region (HeteroscedasticNoise)
+# ================================
 class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
     """
     The Heteroscedastic Noise likelihood:
@@ -1485,7 +1551,11 @@ class HeteroscedasticNoise(MultiLatentLikelihood, GaussNewtonMixin):
 
         return Jf.T, np.swapaxes(Hf, axis1=0, axis2=2), Jsigma[None], Hsigma[None]
 
+# endregion (HeteroscedasticNoise)
 
+# ================================
+# region (HeteroscedasticStudentsT)
+# ================================
 class HeteroscedasticStudentsT(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
     """
     TODO: which Gauss-Newton method?
@@ -1525,8 +1595,11 @@ class HeteroscedasticStudentsT(MultiLatentLikelihood, GeneralisedGaussNewtonMixi
         log_lik, J, H = self.log_likelihood_gradients_(y, f)
         # H = -ensure_positive_precision(-H)
         return log_lik, J, H
+# endregion (HeteroscedasticStudentsT)
 
-
+# ================================
+# region (NonnegativeMatrixFactorisation)
+# ================================
 class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
     """
     The Nonnegative Matrix Factorisation likelihood
@@ -1909,7 +1982,12 @@ class NonnegativeMatrixFactorisation(MultiLatentLikelihood, GaussNewtonMixin):
 
 NMF = NonnegativeMatrixFactorisation
 
+# endregion (NonnegativeMatrixFactorisation)
 
+
+# ================================
+# region (AudioAmplitudeDemodulation)
+# ================================
 class AudioAmplitudeDemodulation(NonnegativeMatrixFactorisation):
     """
     The Audio Amplitude Demodulation likelihood
@@ -1996,7 +2074,11 @@ class Positive(Likelihood, GaussNewtonMixin):
         d2mu_dm2 = self.expected_conditional_mean_dm2(mean, cov, cubature)
         return mu.reshape(-1, 1), omega, dmu_dm[None, None], d2mu_dm2[None]
 
+# endregion (AudioAmplitudeDemodulation)
 
+# ================================
+# region (PositiveStudentsT)
+# ================================
 class PositiveStudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     """
     The Positive Student's t likelihood.
@@ -2031,7 +2113,11 @@ class PositiveStudentsT(Likelihood, GeneralisedGaussNewtonMixin):
     def conditional_moments(self, f):
         return self.link_fn(f), (self.scale**2) * (self.df / (self.df - 2.0)) * np.ones_like(f)
 
+# endregion (PositiveStudentsT)
 
+# ================================
+# region (GaussianMultivariate)
+# ================================
 class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
     """
     The multivariate Gaussian likelihood:
@@ -2142,7 +2228,11 @@ class GaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
     def predict(self, mean_f, var_f, cubature=None):
         return mean_f, var_f + self.covariance
 
+# endregion (GaussianMultivariate)
 
+# ================================
+# region (PositiveGaussianMultivariate)
+# ================================
 class PositiveGaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
     def __init__(self, covariance=None, fix_covariance=False):
         """
@@ -2178,7 +2268,12 @@ class PositiveGaussianMultivariate(MultiLatentLikelihood, GaussNewtonMixin):
     def conditional_moments(self, f):
         return (self.link_fn(f), np.repeat(self.covariance[..., None], f.shape[1], axis=2))
 
+# endregion (PositiveGaussianMultivariate)
 
+
+# ================================
+# region (StudentsTMultivariate)
+# ================================
 class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
     def __init__(self, scale=None, df=3.0, fix_scale=False):
         """
@@ -2207,8 +2302,11 @@ class StudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
 
     def conditional_moments(self, f):
         return f, np.repeat(((self.scale @ self.scale) * (self.df / (self.df - 2.0)))[..., None], f.shape[1], axis=2)
+# endregion (StudentsTMultivariate)
 
-
+# ============================================
+# region (PositiveStudentsTMultivariate)
+# =============================================
 class PositiveStudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
     def __init__(self, scale=None, df=3.0, fix_scale=False):
         """
@@ -2242,8 +2340,11 @@ class PositiveStudentsTMultivariate(MultiLatentLikelihood, GeneralisedGaussNewto
             self.link_fn(f),
             np.repeat(((self.scale @ self.scale) * (self.df / (self.df - 2.0)))[..., None], f.shape[1], axis=2),
         )
+# endregion (PositiveStudentsTMultivariate)
 
-
+# ================================
+# region (Softmax)
+# ================================
 class Softmax(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
     def __init__(self, num_classes):
         self.num_classes = num_classes
@@ -2276,8 +2377,11 @@ class Softmax(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
 
     def generalised_gauss_newton_residual_jacobian(self, f, cholC):
         return inv(cholC) @ jacrev(self.conditional_moments)(f.reshape(-1))[0]
+# endregion (Softmax)
 
-
+# ================================
+# region (MultiStage)
+# ================================
 class MultiStage(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
     def __init__(self):
         self.bernoulli = Bernoulli()
@@ -2304,8 +2408,11 @@ class MultiStage(MultiLatentLikelihood, GeneralisedGaussNewtonMixin):
             + np.where(np.greater_equal(y, 2), lpn0 + lpn1 + lp2, zeros)
         )
         return np.squeeze(logp)
+# endregion (MultiStage)
 
-
+# ================================
+# region (LinearCoregionalisation)
+# ================================
 class LinearCoregionalisation(MultiLatentLikelihood, GaussNewtonMixin):
     """
     TODO: implement closed form updates
@@ -2353,7 +2460,11 @@ class LinearCoregionalisation(MultiLatentLikelihood, GaussNewtonMixin):
     def conditional_moments(self, f):
         return (self.weights @ f, np.repeat(self.covariance[..., None], f.shape[1], axis=2))
 
+# endregion (LinearCoregionalisation)
 
+# ================================
+# region (RegressionNetwork)
+# ================================
 class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
     """
     GPRN
@@ -2453,3 +2564,4 @@ class RegressionNetwork(MultiLatentLikelihood, GaussNewtonMixin):
         Z = np.sum(weighted_likelihood_eval)
         lZ = np.log(np.maximum(Z, 1e-6))
         return lZ
+# endregion (RegressionNetwork)

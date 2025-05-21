@@ -49,6 +49,9 @@ jax.config.update("jax_enable_x64", True)
 LOG2PI = math.log(2 * math.pi)
 
 
+# ==================================
+# region(GaussianDistribution)
+# ==================================
 class GaussianDistribution(objax.Module):
     """
     A small class defined to handle the fact that we often need access to both the mean / cov parameterisation
@@ -84,6 +87,7 @@ class GaussianDistribution(objax.Module):
 
     @staticmethod
     def reparametrise(param1, param2):
+        """convert natural paramter to mean, covariance"""
         chol = cho_factor(param2, lower=True)
         reparam1 = cho_solve(chol, param1)
         reparam2 = cho_solve(chol, np.tile(np.eye(param2.shape[1]), [param2.shape[0], 1, 1]))
@@ -98,8 +102,11 @@ class GaussianDistribution(objax.Module):
         self.nat1_.value = nat1
         self.nat2_.value = nat2
         self.mean_.value, self.covariance_.value = self.reparametrise(nat1, nat2)
+# endregion(GaussianDistribution)
 
-
+# ==================================
+# region(BaseModel)
+# ==================================
 class BaseModel(objax.Module):
     """
     The parent model class: initialises all the common model features and implements shared methods
@@ -262,8 +269,12 @@ class BaseModel(objax.Module):
 
         lZ = self.compute_log_lik(pseudo_y, pseudo_var)
         return (cavity_mean, cavity_cov), lel_pseudo, lZ
+# endregion(BaseModel)
 
 
+# ==================================
+# region(GaussianProcess)
+# ==================================
 class GaussianProcess(BaseModel):
     """
     A standard (kernel-based) GP model with prior of the form
@@ -381,8 +392,12 @@ class GaussianProcess(BaseModel):
 
 
 GP = GaussianProcess
+# endregion (GaussianProcess)
 
 
+# ==============================================
+# region(SparseGaussianProcess)
+# ==============================================
 class SparseGaussianProcess(GaussianProcess):
     """
     A standard (kernel-based) GP model with prior of the form
@@ -622,8 +637,12 @@ class SparseGaussianProcess(GaussianProcess):
 
 
 SparseGP = SparseGaussianProcess
+# endregion(SparseGaussianProcess)
 
 
+# =============================================
+# region(MarkovGaussianProcess)
+# =============================================
 class MarkovGaussianProcess(BaseModel):
     """
     The stochastic differential equation (SDE) form of a Gaussian process (GP) model.
@@ -794,11 +813,9 @@ class MarkovGaussianProcess(BaseModel):
                                                           filter_cov,
                                                           return_full=True,
                                                           parallel=self.parallel)
-
         # add dummy states at either edge
         inf = 1e10 * np.ones_like(self.X[0, :1])
         X_aug = np.block([[-inf], [self.X[:, :1]], [inf]])
-
         # predict the state distribution at the test time steps:
         state_mean, state_cov = self.temporal_conditional(X_aug, X, smoother_mean, smoother_cov, gain, self.kernel)
         # extract function values from the state:
@@ -925,8 +942,12 @@ class MarkovGaussianProcess(BaseModel):
 
 
 MarkovGP = MarkovGaussianProcess
+# endregion(MarkovGaussianProcess)
 
 
+# ================================================
+# region(SparseMarkovGaussianProcess)
+# ================================================
 class SparseMarkovGaussianProcess(MarkovGaussianProcess):
     """
     A sparse Markovian GP.
@@ -950,11 +971,9 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         self.num_transitions = self.dz.shape[0]
         zeros = np.zeros([self.num_transitions, 2 * self.state_dim, 1])
         eyes = np.tile(np.eye(2 * self.state_dim), [self.num_transitions, 1, 1])
-
         # nat2 = 1e-8 * eyes
         # initialise to match MarkovGP / GP on first step (when Z=X):
         nat2 = (1e-8*eyes).at[:-1, self.state_dim, self.state_dim].set(1e-2)
-
         # initialise to match old implementation:
         # nat2 = (1 / 99) * eyes
         self.pseudo_likelihood = GaussianDistribution(
@@ -1086,7 +1105,6 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         P, T = vmap(compute_conditional_statistics, [0, None, None, 0])(
             self.X[batch_ind, :1], self.Z.value, self.kernel, ind
         )
-
         H = self.kernel.measurement_model()
         if self.spatio_temporal:
             B, C = self.kernel.spatial_conditional(self.X[batch_ind], self.R[batch_ind])
@@ -1101,11 +1119,16 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         return mean_f, cov_f
 
     def conditional_data_to_posterior(self, mean_f, cov_f):
+        """conditional_posterior_to_data() must be run first so that self.conditional_mean is set
+
+        Args:
+            mean_f (_type_): 観測平均
+            cov_f (_type_): 観測共分散
+        Returns:
+            _type_: 補助変数の平均と共分散
         """
-        conditional_posterior_to_data() must be run first so that self.conditional_mean is set
-        """
-        mean_q = transpose(self.conditional_mean) @ mean_f  # 観測平均
-        cov_q = transpose(self.conditional_mean) @ cov_f @ self.conditional_mean # 観測共分散
+        mean_q = transpose(self.conditional_mean) @ mean_f  # 補助変数の平均
+        cov_q = transpose(self.conditional_mean) @ cov_f @ self.conditional_mean # 補助変数の共分散
         return mean_q, cov_q
 
     def group_natural_params(self, nat1_n, nat2_n, batch_ind=None):
@@ -1128,9 +1151,7 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         counter = counter.reshape(-1, 1, 1)
         nat1 = new_nat1 + (1. - counter / num_neighbours) * old_nat1
         nat2 = new_nat2 + (1. - counter / num_neighbours) * old_nat2
-
         nat2 += 1e-8 * np.eye(nat2.shape[1])  # prevent zeros
-
         return nat1, nat2
 
     def cavity_distribution(self, batch_ind=None, power=None):
@@ -1147,8 +1168,12 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
 
 
 SparseMarkovGP = SparseMarkovGaussianProcess
+# endregion(SparseMarkovGaussianProcess)
 
 
+# ================================================
+# region(MarkovMeanFieldGaussianProcess)
+# ================================================
 class MarkovMeanFieldGaussianProcess(MarkovGaussianProcess):
     """
     """
@@ -1223,8 +1248,12 @@ class MarkovMeanFieldGaussianProcess(MarkovGaussianProcess):
 
 
 MarkovMeanFieldGP = MarkovMeanFieldGaussianProcess
+# endregion(MarkovMeanFieldGaussianProcess)
 
 
+# ================================================
+# region(SparseMarkovMeanFieldGaussianProcess)
+# ================================================
 class SparseMarkovMeanFieldGaussianProcess(SparseMarkovGaussianProcess):
     """
     """
@@ -1247,7 +1276,11 @@ class SparseMarkovMeanFieldGaussianProcess(SparseMarkovGaussianProcess):
 
 SparseMarkovMeanFieldGP = SparseMarkovMeanFieldGaussianProcess
 
+# endregion(SparseMarkovMeanFieldGaussianProcess)
 
+# ===============================================
+# region(InfiniteHorizonGaussianProcess)
+# ===============================================
 class InfiniteHorizonGaussianProcess(MarkovGaussianProcess):
     """
     """
@@ -1303,7 +1336,12 @@ class InfiniteHorizonGaussianProcess(MarkovGaussianProcess):
 
 
 IHGP = InfiniteHorizonGaussianProcess
+# endregion(InfiniteHorizonGaussianProcess)
 
+
+# ==============================================
+# region(SparseInfiniteHorizonGaussianProcess)
+# ==============================================
 
 class SparseInfiniteHorizonGaussianProcess(SparseMarkovGaussianProcess):
     """
@@ -1358,3 +1396,4 @@ class SparseInfiniteHorizonGaussianProcess(SparseMarkovGaussianProcess):
 
 
 SparseIHGP = SparseInfiniteHorizonGaussianProcess
+# endregion(SparseInfiniteHorizonGaussianProcess)
