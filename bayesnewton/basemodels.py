@@ -983,7 +983,7 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         self.posterior_mean = objax.StateVar(zeros)
         self.posterior_variance = objax.StateVar(eyes)
         self.mask_pseudo_y = None
-        self.conditional_mean = None
+        self.W = None
         # TODO: if training Z this needs to be done at every training step (as well as sorting and computing dz)
         self.ind, self.num_neighbours = set_z_stats(self.X, self.Z.value)
 
@@ -1102,24 +1102,24 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         ind = self.ind[batch_ind]
         post_mean, post_cov = post_mean[ind], post_cov[ind]
 
-        P, T = vmap(compute_conditional_statistics, [0, None, None, 0])(
+        R, T = vmap(compute_conditional_statistics, [0, None, None, 0])(
             self.X[batch_ind, :1], self.Z.value, self.kernel, ind
         )
         H = self.kernel.measurement_model()
         if self.spatio_temporal:
             B, C = self.kernel.spatial_conditional(self.X[batch_ind], self.R[batch_ind])
             BH = B @ H
-            self.conditional_mean = BH @ P  # W
-            conditional_cov = BH @ T @ transpose(BH) + C  # nu
+            self.W = BH @ R  # W
+            nu = BH @ T @ transpose(BH) + C  # nu
         else:
-            self.conditional_mean = H @ P  # W
-            conditional_cov = H @ T @ transpose(H)  # nu
-        mean_f = self.conditional_mean @ post_mean # 観測平均
-        cov_f = self.conditional_mean @ post_cov @ transpose(self.conditional_mean) + conditional_cov   # 観測共分散
+            self.W = H @ R  # W
+            nu = H @ T @ transpose(H)
+        mean_f = self.W @ post_mean # 観測平均(31)
+        cov_f = self.W @ post_cov @ transpose(self.W) + nu   # 観測共分散(31)
         return mean_f, cov_f
 
     def conditional_data_to_posterior(self, mean_f, cov_f):
-        """conditional_posterior_to_data() must be run first so that self.conditional_mean is set
+        """conditional_posterior_to_data() must be run first so that self.W is set
 
         Args:
             mean_f (_type_): 観測平均
@@ -1127,8 +1127,8 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         Returns:
             _type_: 補助変数の平均と共分散
         """
-        mean_q = transpose(self.conditional_mean) @ mean_f  # 補助変数の平均
-        cov_q = transpose(self.conditional_mean) @ cov_f @ self.conditional_mean # 補助変数の共分散
+        mean_q = transpose(self.W) @ mean_f  # 補助変数の平均
+        cov_q = transpose(self.W) @ cov_f @ self.W # 補助変数の共分散
         return mean_q, cov_q
 
     def group_natural_params(self, nat1_n, nat2_n, batch_ind=None):

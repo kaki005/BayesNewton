@@ -240,7 +240,6 @@ def compute_conditional_statistics(x_test, x, kernel, ind):
     Q_back = Pinf - A_back @ Pinf @ A_back.T    # Q_{x, m+1}
     A_back_Q_fwd = A_back @ Q_fwd
     Q_mp = Q_back + A_back @ A_back_Q_fwd.T
-
     jitter = 1e-8 * np.eye(Q_mp.shape[0])
     chol_Q_mp = cho_factor(Q_mp + jitter, lower=True)
     Q_mp_inv_A_back = cho_solve(chol_Q_mp, A_back)  # V = Q₋₊⁻¹ Aₜ₊
@@ -248,9 +247,9 @@ def compute_conditional_statistics(x_test, x, kernel, ind):
     # The conditional_covariance T = Q₋ₜ - Q₋ₜAₜ₊ᵀQ₋₊⁻¹Aₜ₊Q₋ₜ == Q₋ₜ - Q₋ₜᵀAₜ₊ᵀL⁻ᵀL⁻¹Aₜ₊Q₋ₜ
     T = Q_fwd - A_back_Q_fwd.T @ Q_mp_inv_A_back @ Q_fwd # (28)
     # W = Q₋ₜAₜ₊ᵀQ₋₊⁻¹
-    W = Q_fwd @ Q_mp_inv_A_back.T    # R2 (30)
-    P = np.concatenate([A_fwd - W @ A_back @ A_fwd, W], axis=-1)    # R = [R1, R2]
-    return P, T
+    R2 = Q_fwd @ Q_mp_inv_A_back.T    # R2 (30)
+    R = np.concatenate([A_fwd - R2 @ A_back @ A_fwd, R2], axis=-1)    # R = [R1, R2]
+    return R, T
 
 
 def sum_natural_params_by_group(carry, inputs):
