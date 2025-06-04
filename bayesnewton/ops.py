@@ -353,6 +353,7 @@ def _parallel_rts(fms, fPs, As, Qs, H, return_full):
 def rauch_tung_striebel_smoother(dt, kernel, filter_mean, filter_cov, return_full=False, parallel=False):
     """
     Run the RTS smoother to get p(fₙ|y₁,...,y_N),
+
     :param dt: step sizes [N, 1]
     :param kernel: an instantiation of the kernel class, used to determine the state space model
     :param filter_mean: the intermediate distribution means computed during filtering [N, state_dim, 1]
@@ -378,6 +379,7 @@ def rauch_tung_striebel_smoother(dt, kernel, filter_mean, filter_cov, return_ful
 def kalman_filter_pairs(dt, kernel, y, noise_cov, mask=None, parallel=False):
     """
     A Kalman filter over pairs of states, in which y is [2state_dim, 1] and noise_cov is [2state_dim, 2state_dim]
+
     :param dt: step sizes [N, 1]
     :param kernel: an instantiation of the kernel class, used to determine the state space model
     :param y: observations [N, 2state_dim, 1]
@@ -790,6 +792,7 @@ def kalman_filter_pairs_meanfield(dt, kernel, y, noise_cov, parallel=False, bloc
 def dare(A, H, Q, R, Pinit, num_iters=20):
     """
     solve a discrete algebraic Ricatti equation
+
     :param A: transition matrix
     :param H: measurement model mean
     :param Q: process noise covariance

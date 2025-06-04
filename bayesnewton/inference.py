@@ -532,11 +532,9 @@ class VariationalGaussNewton(VariationalInference):
             batch_ind = np.arange(self.num_data)
 
         mean_f, cov_f = self.conditional_posterior_to_data(batch_ind)
-
         log_target, jacobian, hessian = vmap(self.likelihood.variational_gauss_newton, (0, 0, 0, None))(
             self.Y[batch_ind], mean_f, cov_f, cubature
         )
-
         jacobian, hessian = self.conditional_data_to_posterior(jacobian, hessian)
 
         if mean_f.shape[1] == jacobian.shape[1]:

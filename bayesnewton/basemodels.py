@@ -221,6 +221,7 @@ class BaseModel(objax.Module):
         return mean_f, cov_f
 
     def expected_density_pseudo(self):
+        """calc E_q[log N(pseudo_y_n | u, pseudo_var_n)]"""
         expected_density = vmap(gaussian_expected_log_lik)(  # parallel operation
             self.pseudo_likelihood.mean,
             self.posterior_mean.value,
@@ -323,7 +324,6 @@ class GaussianProcess(BaseModel):
             pseudo_var = self.pseudo_likelihood.covariance
         pseudo_y = pseudo_y
         pseudo_var = pseudo_var
-
         Knn = self.kernel(self.X, self.X)
         # Ky = Knn + np.diag(np.squeeze(pseudo_var))  # single-latent version
         pseudo_var_block_diag = blocktensor_to_blockdiagmatrix(pseudo_var)
@@ -334,11 +334,10 @@ class GaussianProcess(BaseModel):
         pseudo_y = pseudo_y.reshape(-1, 1)
         Ly, low = cho_factor(Ky, lower=True)
         log_lik_pseudo = (
-            - 0.5 * np.sum(pseudo_y.T @ cho_solve((Ly, low), pseudo_y))
-            - np.sum(np.log(np.diag(Ly)))
-            - 0.5 * pseudo_y.shape[0] * dim * LOG2PI
+            - 0.5 * np.sum(pseudo_y.T @ cho_solve((Ly, low), pseudo_y)) # - y^T K_y^{-1} y
+            - np.sum(np.log(np.diag(Ly))) # - log |K_y|
+            - 0.5 * pseudo_y.shape[0] * dim * LOG2PI # -0.5* log (2\pi)
         )
-
         return log_lik_pseudo
 
     def predict(self, X, R=None):
@@ -440,7 +439,7 @@ class SparseGaussianProcess(GaussianProcess):
                                                        self.X,
                                                        self.Z.value)
         self.posterior_mean.value = mean.reshape(self.num_inducing, self.func_dim, 1)
-        # self.posterior_variance.value = np.diag(covariance).reshape(self.num_inducing, 1, 1)
+
         self.posterior_variance.value = covariance[self.cov_block_diag_ind].reshape(
             self.num_inducing, self.func_dim, self.func_dim
         )
@@ -451,7 +450,7 @@ class SparseGaussianProcess(GaussianProcess):
 
     def compute_global_pseudo_lik(self):
         nat1lik_global, nat2lik_global = self.compute_global_pseudo_nat()
-        pseudo_var_global = inv(nat2lik_global + 1e-12 * np.eye(nat2lik_global.shape[0]))
+        pseudo_var_global = inv(nat2lik_global + 1e-12 * np.eye(nat2lik_global.shape[0])) # add jitter and inverse
         pseudo_y_global = pseudo_var_global @ nat1lik_global
         return pseudo_y_global, pseudo_var_global
 
@@ -489,12 +488,11 @@ class SparseGaussianProcess(GaussianProcess):
         """
         pseudo_y_full, pseudo_var_full = self.compute_global_pseudo_lik()
 
-        # ---- compute the log marginal likelihood, i.e. the normaliser, of the pseudo model ----
-        # log int p(u) prod_n N(pseudo_y_n | u, pseudo_var_n) du
-        log_lik_pseudo = self.compute_log_lik(pseudo_y_full, pseudo_var_full)
-
-        # E_q[log N(pseudo_y_n | u, pseudo_var_n)]
-        expected_density_pseudo = gaussian_expected_log_lik(  # this term does not depend on the prior, use stored q(u)
+        # 周辺化対数尤度
+        # log ∫ p(u) prod_n 𝓝(pseudo_y_n | u, pseudo_var_n) du
+        log_lik_pseudo = self.compute_log_lik(pseudo_y_full, pseudo_var_full) # 周辺尤度
+        # pseudo_yの平均対数尤度  E_q[log 𝓝(yₙ|fₙ,σ²)] = ∫ log 𝓝(yₙ|fₙ,σ²) 𝓝(fₙ|mₙ,vₙ) dfₙ
+        expected_density_pseudo = gaussian_expected_log_lik(
             pseudo_y_full,
             self.posterior_mean.value.reshape(-1, 1),
             self.posterior_covariance.value,
@@ -505,7 +503,7 @@ class SparseGaussianProcess(GaussianProcess):
         return kl
 
     def compute_log_lik(self, pseudo_y=None, pseudo_var=None):
-        """ log int p(u) prod_n N(pseudo_y_n | u, pseudo_var_n) du """
+        """ log ∫ p(u) prod_n 𝓝(pseudo_y_n | u, pseudo_var_n) du """
         dim = 1.  # TODO: implement multivariate case
         Kuu = self.kernel(self.Z.value, self.Z.value)
 
@@ -537,7 +535,7 @@ class SparseGaussianProcess(GaussianProcess):
     def conditional_posterior_to_data(self, batch_ind=None, post_mean=None, post_cov=None):
         """
         compute
-        q(f) = int p(f | u) q(u) du
+        q(f) = ∫ p(f | u) q(u) du
         where
         q(u) = N(u | post_mean, post_cov)
         """
@@ -588,18 +586,6 @@ class SparseGaussianProcess(GaussianProcess):
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
         N = batch_ind.shape[0]
-        # Kuf = self.kernel(self.Z.value, self.X)  # only compute log lik for observed values
-        # Kuu = self.kernel(self.Z.value, self.Z.value)
-        # Wuf = solve(Kuu, Kuf)  # conditional mapping, Kuu^-1 Kuf
-        #
-        # nat1lik_full = Wuf @ np.squeeze(self.pseudo_likelihood.nat1, axis=-1)
-        # nat2lik_full = Wuf @ np.diag(np.squeeze(self.pseudo_likelihood.nat2)) @ transpose(Wuf)
-        #
-        # nat1cav = nat1lik_full * (self.num_inducing - power) / self.num_inducing
-        # nat2cav = nat2lik_full * (self.num_inducing - power) / self.num_inducing
-        #
-        # cavity_cov = inv(nat2cav + 1e-12 * np.eye(Kuu.shape[0]))
-        # cavity_mean = cavity_cov @ nat1cav
         nat1lik, nat2lik = self.compute_global_pseudo_nat()
         cavity_mean, cavity_cov = compute_cavity(
             self.posterior_mean.value.reshape(-1, 1),
@@ -712,6 +698,7 @@ class MarkovGaussianProcess(BaseModel):
         Compute the posterior via filtering and smoothing
         """
         pseudo_y, pseudo_var = self.compute_full_pseudo_lik()
+        # pseudo_y, pseudo_varに対してカルマンフィルタ+RTSSmootherで近似する
         log_lik, (filter_mean, filter_cov) = self.filter(self.dt,
                                                          self.kernel,
                                                          pseudo_y,
@@ -728,7 +715,7 @@ class MarkovGaussianProcess(BaseModel):
 
     def compute_kl(self):
         """
-        KL[q()|p()]
+        KL divergence between the approximate posterior q(u) and the prior p(u)
         """
         pseudo_y, pseudo_var = self.compute_full_pseudo_lik()
         log_lik_pseudo = self.compute_log_lik(pseudo_y, pseudo_var)
@@ -746,7 +733,7 @@ class MarkovGaussianProcess(BaseModel):
 
     def compute_log_lik(self, pseudo_y=None, pseudo_var=None):
         """
-        int p(f) N(pseudo_y | f, pseudo_var) df
+        compute log ∫ p(f) N(pseudo_y | f, pseudo_var) df.
         """
         if pseudo_y is None:
             pseudo_y, pseudo_var = self.compute_full_pseudo_lik()
@@ -852,6 +839,7 @@ class MarkovGaussianProcess(BaseModel):
     def prior_sample(self, num_samps=1, X=None, seed=0):
         """
         Sample from the model prior f~N(0,K) multiple times using a nested loop.
+
         :param num_samps: the number of samples to draw [scalar]
         :param X: the input locations at which to sample (defaults to training inputs) [N, 1]
         :param seed: the random seed for sampling
@@ -873,6 +861,7 @@ class MarkovGaussianProcess(BaseModel):
         def draw_full_sample(carry_, _):
             f_sample_i, i = carry_
             gen0 = objax.random.Generator(seed - 1 - i)
+            # m0 ~ N(0, Pinf)
             m0 = cholesky(Pinf, lower=True) @ objax.random.normal(shape=(sd, 1), generator=gen0)
 
             def sample_one_time_step(carry, inputs):
@@ -881,7 +870,7 @@ class MarkovGaussianProcess(BaseModel):
                 chol_Q = cholesky(Q + jitter, lower=True)  # <--- can be a bit unstable
                 gen = objax.random.Generator(seed + i * k + k)
                 q_samp = chol_Q @ objax.random.normal(shape=(sd, 1), generator=gen)
-                m = A @ m + q_samp
+                m = A @ m + q_samp # m_t ~ N(Am_{t-1}, Q + jitter)
                 f = H @ m
                 return (m, k+1), f
 
@@ -906,8 +895,9 @@ class MarkovGaussianProcess(BaseModel):
          - add Gaussian noise to the prior samples using auxillary model p(y*|f*) = 𝓝(y*|f*,σ²*)
          - smooth the samples by computing the posterior p(f*|y*)
          - posterior samples = prior samples + smoothed samples + posterior mean
-                             = f* + E[p(f*|y*)] + E[p(f|y)]
+                             = f* - E[p(f*|y*)] + E[p(f|y)]
         See Arnaud Doucet's note "A Note on Efficient Conditional Simulation of Gaussian Distributions" for details.
+
         :param X: the sampling input locations [N, 1]
         :param num_samps: the number of samples to draw [scalar]
         :param seed: the random seed for sampling
@@ -923,12 +913,12 @@ class MarkovGaussianProcess(BaseModel):
             X = np.concatenate([self.X, X])
             X, ind = np.unique(X, return_inverse=True)
             train_ind, test_ind = ind[:self.num_data], ind[self.num_data:]
-        post_mean, _ = self.predict(X)
-        prior_samp = self.prior_sample(X=X, num_samps=num_samps, seed=seed)  # sample at training locations
+        post_mean, _ = self.predict(X) # p(f|y)
+        prior_samp = self.prior_sample(X=X, num_samps=num_samps, seed=seed)  # f* ~ N(0, K)
         lik_chol = np.tile(cholesky(self.pseudo_likelihood.covariance, lower=True), [num_samps, 1, 1, 1])
         gen = objax.random.Generator(seed)
         prior_samp_train = prior_samp[:, train_ind]
-        prior_samp_y = prior_samp_train + lik_chol @ objax.random.normal(shape=prior_samp_train.shape, generator=gen)
+        prior_samp_y = prior_samp_train + lik_chol @ objax.random.normal(shape=prior_samp_train.shape, generator=gen) # p(y*|f*) = 𝓝(y*|f*,σ²*)
 
         def smooth_prior_sample(i, prior_samp_y_i):
             smoothed_sample, _ = self.predict(X, pseudo_lik_params=(prior_samp_y_i, self.pseudo_likelihood.covariance))
@@ -936,8 +926,8 @@ class MarkovGaussianProcess(BaseModel):
 
         _, smoothed_samples = scan(f=smooth_prior_sample,
                                    init=0,
-                                   xs=prior_samp_y)
-
+                                   xs=prior_samp_y) # p(f*|y*)
+        # posterior samples = f* - E[p(f*|y*)] + E[p(f|y)]
         return (prior_samp[..., 0, 0] - smoothed_samples + post_mean[None])[:, test_ind]
 
 
@@ -1040,9 +1030,9 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
         KL divergence between the approximate posterior q(u) and the prior p(u)
         TODO: can we remove the need for this by generalising these methods?
         """
-        # log int p(u) prod_n N(pseudo_y_n | u, pseudo_var_n) du
+        # log ∫ p(u) prod_n 𝓝(pseudo_y_n | u, pseudo_var_n) du
         log_lik_pseudo = self.compute_log_lik()
-        # E_q[log N(pseudo_y_n | u, pseudo_var_n)]
+        # E_q[log 𝓝(pseudo_y_n | u, pseudo_var_n)]
         expected_density_pseudo = self.expected_density_pseudo()
         kl = expected_density_pseudo - log_lik_pseudo  # KL[approx_post || prior]
         return kl
@@ -1069,9 +1059,8 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
                                                           filter_cov,
                                                           return_full=True,
                                                           parallel=self.parallel)
-        # predict the state distribution at the test time steps
+        # Zの値を元にXでの値を推定
         state_mean, state_cov = self.temporal_conditional(self.Z.value, X, smoother_mean, smoother_cov, gain, self.kernel)
-        # extract function values from the state:
         H = self.kernel.measurement_model()
         if self.spatio_temporal:
             # TODO: if R is fixed, only compute B, C once
@@ -1089,9 +1078,9 @@ class SparseMarkovGaussianProcess(MarkovGaussianProcess):
     def conditional_posterior_to_data(self, batch_ind=None, post_mean=None, post_cov=None):
         """
         compute
-        q(f) = int p(f | u) q(u) du
+        q(f) = ∫ p(f | u) q(u) du
         where
-        q(u) = N(u | post_mean, post_cov)
+        q(u) = 𝓝(u | post_mean, post_cov)
         """
         if batch_ind is None:
             batch_ind = np.arange(self.num_data)
